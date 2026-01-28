@@ -24,7 +24,7 @@ import {
   Shield,
   Zap,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 interface IntegrationCardProps {
   name: string
@@ -76,27 +76,117 @@ function IntegrationCard({ name, description, icon, configured, envVars }: Integ
   )
 }
 
-// Mock integration status - in production this would come from the server
-const integrationStatus = {
-  supabase: true,
-  housecallPro: true,
-  openPhone: true,
-  telegram: true,
-  vapi: true,
-  stripe: true,
-  qstash: true,
-  ai: true,
+type SettingsPayload = {
+  integrationStatus: Record<string, boolean>
+  webhookUrls: Record<string, string>
+  notifications: {
+    newLeads: boolean
+    jobClaimed: boolean
+    exceptions: boolean
+    dailyReport: boolean
+    sms: boolean
+    email: boolean
+  }
+  businessRules: Record<string, any>
+  updated_at?: string | null
 }
 
 export default function SettingsPage() {
-  const [notifications, setNotifications] = useState({
-    newLeads: true,
-    jobClaimed: true,
-    exceptions: true,
-    dailyReport: true,
-    sms: true,
-    email: false,
-  })
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [settings, setSettings] = useState<SettingsPayload | null>(null)
+
+  const notifications = settings?.notifications
+  const webhookUrls = settings?.webhookUrls || {}
+  const integrationStatus = settings?.integrationStatus || {}
+
+  const [businessRulesDraft, setBusinessRulesDraft] = useState<Record<string, any>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await fetch("/api/settings", { cache: "no-store" })
+        const json = await res.json()
+        if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to load settings")
+        if (cancelled) return
+        setSettings(json.data as SettingsPayload)
+        setBusinessRulesDraft((json.data as SettingsPayload)?.businessRules || {})
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load settings")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const updatedAtLabel = useMemo(() => {
+    if (!settings?.updated_at) return null
+    try {
+      return new Date(settings.updated_at).toLocaleString()
+    } catch {
+      return null
+    }
+  }, [settings?.updated_at])
+
+  async function updateNotifications(patch: Partial<SettingsPayload["notifications"]>) {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ notifications: patch }),
+      })
+      const json = await res.json()
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to save notifications")
+      setSettings((prev) =>
+        prev
+          ? { ...prev, notifications: { ...prev.notifications, ...patch }, updated_at: json?.data?.updated_at || prev.updated_at }
+          : prev
+      )
+    } catch (e: any) {
+      setError(e?.message || "Failed to save")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveBusinessRules() {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ businessRules: businessRulesDraft }),
+      })
+      const json = await res.json()
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to save business rules")
+      setSettings((prev) =>
+        prev ? { ...prev, businessRules: { ...businessRulesDraft }, updated_at: json?.data?.updated_at || prev.updated_at } : prev
+      )
+    } catch (e: any) {
+      setError(e?.message || "Failed to save")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // ignore
+    }
+  }
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -105,6 +195,8 @@ export default function SettingsPage() {
         <p className="text-muted-foreground">
           Manage OSIRIS integrations, notifications, and system configuration
         </p>
+        {updatedAtLabel && <p className="text-xs text-muted-foreground mt-1">Last saved: {updatedAtLabel}</p>}
+        {error && <p className="text-sm text-destructive mt-2">{error}</p>}
       </div>
 
       <Tabs defaultValue="integrations" className="space-y-6">
@@ -141,56 +233,56 @@ export default function SettingsPage() {
                 name="Supabase"
                 description="Database & automation logs"
                 icon={<Database className="w-4 h-4" />}
-                configured={integrationStatus.supabase}
+                configured={Boolean(integrationStatus.supabase)}
                 envVars={["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]}
               />
               <IntegrationCard
                 name="Housecall Pro"
                 description="Job management (source of truth)"
                 icon={<Settings className="w-4 h-4" />}
-                configured={integrationStatus.housecallPro}
+                configured={Boolean(integrationStatus.housecallPro)}
                 envVars={["HOUSECALL_PRO_API_KEY", "HOUSECALL_PRO_COMPANY_ID"]}
               />
               <IntegrationCard
                 name="OpenPhone"
                 description="SMS customer communications"
                 icon={<Phone className="w-4 h-4" />}
-                configured={integrationStatus.openPhone}
+                configured={Boolean(integrationStatus.openPhone)}
                 envVars={["OPENPHONE_API_KEY", "OPENPHONE_PHONE_ID_WINBROS"]}
               />
               <IntegrationCard
                 name="Telegram"
                 description="Team notifications & job claiming"
                 icon={<MessageSquare className="w-4 h-4" />}
-                configured={integrationStatus.telegram}
+                configured={Boolean(integrationStatus.telegram)}
                 envVars={["TELEGRAM_BOT_TOKEN", "TELEGRAM_CONTROL_BOT_TOKEN"]}
               />
               <IntegrationCard
                 name="VAPI"
                 description="AI voice for calls & after-hours"
                 icon={<Mic className="w-4 h-4" />}
-                configured={integrationStatus.vapi}
+                configured={Boolean(integrationStatus.vapi)}
                 envVars={["VAPI_API_KEY", "VAPI_ASSISTANT_ID_WINBROS", "VAPI_PHONE_ID_WINBROS"]}
               />
               <IntegrationCard
                 name="Stripe"
                 description="Payment processing"
                 icon={<CreditCard className="w-4 h-4" />}
-                configured={integrationStatus.stripe}
+                configured={Boolean(integrationStatus.stripe)}
                 envVars={["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]}
               />
               <IntegrationCard
                 name="QStash"
                 description="Background jobs & scheduling"
                 icon={<Clock className="w-4 h-4" />}
-                configured={integrationStatus.qstash}
+                configured={Boolean(integrationStatus.qstash)}
                 envVars={["QSTASH_TOKEN", "QSTASH_CURRENT_SIGNING_KEY"]}
               />
               <IntegrationCard
                 name="AI Models"
                 description="OpenAI & Anthropic for AI features"
                 icon={<Bot className="w-4 h-4" />}
-                configured={integrationStatus.ai}
+                configured={Boolean(integrationStatus.ai)}
                 envVars={["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]}
               />
             </CardContent>
@@ -209,10 +301,10 @@ export default function SettingsPage() {
                 <div className="flex gap-2">
                   <Input
                     readOnly
-                    value="https://your-domain.vercel.app/api/webhooks/housecall-pro"
+                    value={webhookUrls.housecallPro || ""}
                     className="font-mono text-sm"
                   />
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => copy(webhookUrls.housecallPro || "")} disabled={!webhookUrls.housecallPro}>
                     Copy
                   </Button>
                 </div>
@@ -222,10 +314,10 @@ export default function SettingsPage() {
                 <div className="flex gap-2">
                   <Input
                     readOnly
-                    value="https://your-domain.vercel.app/api/webhooks/telegram"
+                    value={webhookUrls.telegram || ""}
                     className="font-mono text-sm"
                   />
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => copy(webhookUrls.telegram || "")} disabled={!webhookUrls.telegram}>
                     Copy
                   </Button>
                 </div>
@@ -235,10 +327,10 @@ export default function SettingsPage() {
                 <div className="flex gap-2">
                   <Input
                     readOnly
-                    value="https://your-domain.vercel.app/api/webhooks/vapi"
+                    value={webhookUrls.vapi || ""}
                     className="font-mono text-sm"
                   />
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => copy(webhookUrls.vapi || "")} disabled={!webhookUrls.vapi}>
                     Copy
                   </Button>
                 </div>
@@ -248,10 +340,10 @@ export default function SettingsPage() {
                 <div className="flex gap-2">
                   <Input
                     readOnly
-                    value="https://your-domain.vercel.app/api/webhooks/stripe"
+                    value={webhookUrls.stripe || ""}
                     className="font-mono text-sm"
                   />
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => copy(webhookUrls.stripe || "")} disabled={!webhookUrls.stripe}>
                     Copy
                   </Button>
                 </div>
@@ -278,10 +370,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">Get notified when a new lead comes in</p>
                     </div>
                     <Switch
-                      checked={notifications.newLeads}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, newLeads: checked })
-                      }
+                      checked={Boolean(notifications?.newLeads)}
+                      onCheckedChange={(checked) => updateNotifications({ newLeads: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                   <div className="flex items-center justify-between">
@@ -290,10 +381,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">When a team lead claims a job</p>
                     </div>
                     <Switch
-                      checked={notifications.jobClaimed}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, jobClaimed: checked })
-                      }
+                      checked={Boolean(notifications?.jobClaimed)}
+                      onCheckedChange={(checked) => updateNotifications({ jobClaimed: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                   <div className="flex items-center justify-between">
@@ -302,10 +392,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">Rain days, complaints, escalations</p>
                     </div>
                     <Switch
-                      checked={notifications.exceptions}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, exceptions: checked })
-                      }
+                      checked={Boolean(notifications?.exceptions)}
+                      onCheckedChange={(checked) => updateNotifications({ exceptions: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                   <div className="flex items-center justify-between">
@@ -314,10 +403,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">End of day performance summary</p>
                     </div>
                     <Switch
-                      checked={notifications.dailyReport}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, dailyReport: checked })
-                      }
+                      checked={Boolean(notifications?.dailyReport)}
+                      onCheckedChange={(checked) => updateNotifications({ dailyReport: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                 </div>
@@ -332,10 +420,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">Receive alerts via text message</p>
                     </div>
                     <Switch
-                      checked={notifications.sms}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, sms: checked })
-                      }
+                      checked={Boolean(notifications?.sms)}
+                      onCheckedChange={(checked) => updateNotifications({ sms: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                   <div className="flex items-center justify-between">
@@ -344,10 +431,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-muted-foreground">Receive alerts via email</p>
                     </div>
                     <Switch
-                      checked={notifications.email}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, email: checked })
-                      }
+                      checked={Boolean(notifications?.email)}
+                      onCheckedChange={(checked) => updateNotifications({ email: checked })}
+                      disabled={saving || loading || !notifications}
                     />
                   </div>
                 </div>
@@ -367,28 +453,67 @@ export default function SettingsPage() {
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Rate per Labor Hour ($)</Label>
-                <Input type="number" defaultValue={150} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.ratePerLaborHour ?? 0}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, ratePerLaborHour: Number(e.target.value) })}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Production Hours per Day</Label>
-                <Input type="number" defaultValue={8} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.productionHoursPerDay ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, productionHoursPerDay: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Daily Target per Crew ($)</Label>
-                <Input type="number" defaultValue={1200} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.dailyTargetPerCrew ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, dailyTargetPerCrew: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Minimum Job Value ($)</Label>
-                <Input type="number" defaultValue={100} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.minimumJobValue ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, minimumJobValue: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Max Distance (minutes)</Label>
-                <Input type="number" defaultValue={50} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.maxDistanceMinutes ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, maxDistanceMinutes: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>High Value Threshold ($)</Label>
-                <Input type="number" defaultValue={1000} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.highValueThreshold ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, highValueThreshold: Number(e.target.value) })
+                  }
+                />
               </div>
+            </CardContent>
+            <CardContent className="pt-0">
+              <Button onClick={saveBusinessRules} disabled={saving || loading} variant="outline">
+                {saving ? "Saving…" : "Save business rules"}
+              </Button>
             </CardContent>
           </Card>
 
@@ -402,16 +527,39 @@ export default function SettingsPage() {
             <CardContent className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>Initial Window (minutes)</Label>
-                <Input type="number" defaultValue={10} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.initialWindowMinutes ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, initialWindowMinutes: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Urgent Window (minutes)</Label>
-                <Input type="number" defaultValue={3} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.urgentWindowMinutes ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, urgentWindowMinutes: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Escalation Timeout (minutes)</Label>
-                <Input type="number" defaultValue={10} />
+                <Input
+                  type="number"
+                  value={businessRulesDraft.escalationTimeoutMinutes ?? 0}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, escalationTimeoutMinutes: Number(e.target.value) })
+                  }
+                />
               </div>
+            </CardContent>
+            <CardContent className="pt-0">
+              <Button onClick={saveBusinessRules} disabled={saving || loading} variant="outline">
+                {saving ? "Saving…" : "Save timing"}
+              </Button>
             </CardContent>
           </Card>
 
@@ -425,24 +573,59 @@ export default function SettingsPage() {
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <div className="space-y-2">
                 <Label>Initial Text (min)</Label>
-                <Input type="number" defaultValue={0} />
+                <Input
+                  type="number"
+                  value={Number(businessRulesDraft.followupInitialTextMin ?? 0)}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, followupInitialTextMin: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>First Call (min)</Label>
-                <Input type="number" defaultValue={10} />
+                <Input
+                  type="number"
+                  value={Number(businessRulesDraft.followupFirstCallMin ?? 0)}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, followupFirstCallMin: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Double Call (min)</Label>
-                <Input type="number" defaultValue={5} />
+                <Input
+                  type="number"
+                  value={Number(businessRulesDraft.followupDoubleCallMin ?? 0)}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, followupDoubleCallMin: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Second Text (min)</Label>
-                <Input type="number" defaultValue={5} />
+                <Input
+                  type="number"
+                  value={Number(businessRulesDraft.followupSecondTextMin ?? 0)}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, followupSecondTextMin: Number(e.target.value) })
+                  }
+                />
               </div>
               <div className="space-y-2">
                 <Label>Final Call (min)</Label>
-                <Input type="number" defaultValue={10} />
+                <Input
+                  type="number"
+                  value={Number(businessRulesDraft.followupFinalCallMin ?? 0)}
+                  onChange={(e) =>
+                    setBusinessRulesDraft({ ...businessRulesDraft, followupFinalCallMin: Number(e.target.value) })
+                  }
+                />
               </div>
+            </CardContent>
+            <CardContent className="pt-0">
+              <Button onClick={saveBusinessRules} disabled={saving || loading} variant="outline">
+                {saving ? "Saving…" : "Save follow-up timing"}
+              </Button>
             </CardContent>
           </Card>
 
@@ -456,21 +639,39 @@ export default function SettingsPage() {
             <CardContent className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>Start Time</Label>
-                <Input type="time" defaultValue="09:00" />
+                <Input
+                  type="time"
+                  value={String(businessRulesDraft.businessHoursStart ?? "09:00")}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, businessHoursStart: e.target.value })}
+                />
               </div>
               <div className="space-y-2">
                 <Label>End Time</Label>
-                <Input type="time" defaultValue="17:00" />
+                <Input
+                  type="time"
+                  value={String(businessRulesDraft.businessHoursEnd ?? "17:00")}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, businessHoursEnd: e.target.value })}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Timezone</Label>
-                <Input defaultValue="America/Chicago" />
+                <Input
+                  value={String(businessRulesDraft.timezone ?? "")}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, timezone: e.target.value })}
+                />
               </div>
+            </CardContent>
+            <CardContent className="pt-0">
+              <Button onClick={saveBusinessRules} disabled={saving || loading} variant="outline">
+                {saving ? "Saving…" : "Save business hours"}
+              </Button>
             </CardContent>
           </Card>
 
           <div className="flex justify-end">
-            <Button>Save Changes</Button>
+            <Button onClick={saveBusinessRules} disabled={saving || loading}>
+              {saving ? "Saving…" : "Save all business settings"}
+            </Button>
           </div>
         </TabsContent>
 
@@ -485,18 +686,32 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label>Owner Phone Number</Label>
-                <Input placeholder="+1 (555) 123-4567" />
+                <Input
+                  placeholder="+1 (555) 123-4567"
+                  value={String(businessRulesDraft.ownerPhone ?? "")}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, ownerPhone: e.target.value })}
+                />
                 <p className="text-xs text-muted-foreground">
                   Receives escalations and critical system alerts
                 </p>
               </div>
               <div className="space-y-2">
                 <Label>Admin Email</Label>
-                <Input type="email" placeholder="admin@winbros.com" />
+                <Input
+                  type="email"
+                  placeholder="admin@winbros.com"
+                  value={String(businessRulesDraft.adminEmail ?? "")}
+                  onChange={(e) => setBusinessRulesDraft({ ...businessRulesDraft, adminEmail: e.target.value })}
+                />
                 <p className="text-xs text-muted-foreground">
                   Receives daily reports and system notifications
                 </p>
               </div>
+            </CardContent>
+            <CardContent className="pt-0">
+              <Button onClick={saveBusinessRules} disabled={saving || loading} variant="outline">
+                {saving ? "Saving…" : "Save admin contacts"}
+              </Button>
             </CardContent>
           </Card>
 

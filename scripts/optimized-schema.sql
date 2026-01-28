@@ -418,6 +418,19 @@ create index if not exists idx_upsells_job_id on public.upsells(job_id) where jo
 comment on table public.upsells is 'Upsells recorded by teams/cleaners';
 
 -- ============================================
+-- TABLE: app_settings (global settings for dashboard)
+-- ============================================
+create table if not exists public.app_settings (
+  id text primary key,
+  notifications jsonb not null default '{}'::jsonb,
+  business_rules jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+comment on table public.app_settings is 'Global settings (notifications + business rules) edited from the dashboard';
+
+-- ============================================
 -- AUTOMATIC UPDATED_AT TRIGGERS
 -- ============================================
 
@@ -489,6 +502,7 @@ alter table public.reminder_notifications enable row level security;
 alter table public.messages enable row level security;
 alter table public.tips enable row level security;
 alter table public.upsells enable row level security;
+alter table public.app_settings enable row level security;
 
 -- Service role has full access (for backend API)
 create policy "Service role full access" on public.customers
@@ -531,6 +545,9 @@ create policy "Service role full access" on public.tips
   for all using (auth.role() = 'service_role');
 
 create policy "Service role full access" on public.upsells
+  for all using (auth.role() = 'service_role');
+
+create policy "Service role full access" on public.app_settings
   for all using (auth.role() = 'service_role');
 
 -- Authenticated users can read (for dashboard)
