@@ -3,6 +3,7 @@
 import { Bell, Search, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useEffect, useMemo, useState } from "react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +14,38 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
 
+type NotificationItem = {
+  id: string
+  title: string
+  subtitle?: string
+  time: string
+}
+
 export function TopNav() {
+  const [items, setItems] = useState<NotificationItem[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await fetch("/api/notifications?limit=10", { cache: "no-store" })
+        const json = await res.json()
+        const rows = Array.isArray(json?.data) ? (json.data as NotificationItem[]) : []
+        if (!cancelled) setItems(rows)
+      } catch {
+        if (!cancelled) setItems([])
+      }
+    }
+    load()
+    const t = setInterval(load, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [])
+
+  const count = useMemo(() => Math.min(99, items.length), [items.length])
+
   return (
     <header className="flex h-16 items-center justify-between border-b border-border bg-card px-6">
       {/* Search */}
@@ -41,29 +73,30 @@ export function TopNav() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
-              <Badge className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-[10px]">
-                3
-              </Badge>
+              {count > 0 && (
+                <Badge className="absolute -right-1 -top-1 h-5 min-w-5 rounded-full p-0 px-1 text-[10px]">
+                  {count}
+                </Badge>
+              )}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-80">
             <DropdownMenuLabel>Notifications</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="flex flex-col items-start gap-1 p-3">
-              <span className="text-sm font-medium">New lead from Meta</span>
-              <span className="text-xs text-muted-foreground">John Smith - Window cleaning inquiry</span>
-              <span className="text-xs text-muted-foreground">2 minutes ago</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem className="flex flex-col items-start gap-1 p-3">
-              <span className="text-sm font-medium">Team Alpha confirmed job</span>
-              <span className="text-xs text-muted-foreground">Job #1234 - 123 Main St</span>
-              <span className="text-xs text-muted-foreground">5 minutes ago</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem className="flex flex-col items-start gap-1 p-3">
-              <span className="text-sm font-medium">High-value job alert</span>
-              <span className="text-xs text-muted-foreground">$1,500 job needs review</span>
-              <span className="text-xs text-muted-foreground">10 minutes ago</span>
-            </DropdownMenuItem>
+            {items.length === 0 ? (
+              <DropdownMenuItem className="flex flex-col items-start gap-1 p-3">
+                <span className="text-sm font-medium">No notifications</span>
+                <span className="text-xs text-muted-foreground">New events will appear here.</span>
+              </DropdownMenuItem>
+            ) : (
+              items.map((n) => (
+                <DropdownMenuItem key={n.id} className="flex flex-col items-start gap-1 p-3">
+                  <span className="text-sm font-medium">{n.title}</span>
+                  {n.subtitle && <span className="text-xs text-muted-foreground">{n.subtitle}</span>}
+                  <span className="text-xs text-muted-foreground">{n.time}</span>
+                </DropdownMenuItem>
+              ))
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -75,7 +108,7 @@ export function TopNav() {
                 <User className="h-4 w-4 text-primary-foreground" />
               </div>
               <div className="hidden flex-col items-start md:flex">
-                <span className="text-sm font-medium">Max Shoemaker</span>
+                <span className="text-sm font-medium">Test User</span>
                 <span className="text-xs text-muted-foreground">Owner</span>
               </div>
             </Button>
