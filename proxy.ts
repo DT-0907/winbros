@@ -28,7 +28,7 @@ function isExternalRoute(pathname: string): boolean {
   return externalRoutes.some(route => pathname.startsWith(route))
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Allow public routes
