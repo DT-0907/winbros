@@ -1,5 +1,6 @@
 import { toE164 } from './phone-utils'
 import { getClientConfig } from './client-config'
+import { getApiKey } from './user-api-keys'
 import type { Customer, Job } from './supabase'
 
 const HUBSPOT_BASE_URL = 'https://api.hubapi.com'
@@ -19,14 +20,14 @@ export type HubSpotDealSyncResult = {
 
 function isHubSpotEnabled(): boolean {
   const config = getClientConfig()
-  return config.features.hubspot && Boolean(process.env.HUBSPOT_ACCESS_TOKEN)
+  return config.features.hubspot && Boolean(getApiKey('hubspotAccessToken'))
 }
 
 async function hubspotRequest<T>(
   path: string,
   options: RequestInit
 ): Promise<T> {
-  const token = process.env.HUBSPOT_ACCESS_TOKEN
+  const token = getApiKey('hubspotAccessToken')
   if (!token) {
     throw new Error('HUBSPOT_ACCESS_TOKEN not configured')
   }

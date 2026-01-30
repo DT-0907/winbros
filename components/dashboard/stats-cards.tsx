@@ -41,7 +41,18 @@ export function StatsCards() {
     }
   }, [])
 
-  const stats = useMemo(() => {
+  type StatTrend = "up" | "down" | "neutral"
+  type StatItem = {
+    name: string
+    value: string
+    target: string
+    change: string
+    trend: StatTrend
+    icon: typeof DollarSign
+    progress: number
+  }
+
+  const stats = useMemo((): StatItem[] => {
     const revenue = Number(metrics?.total_revenue || 0)
     const targetRevenue = Number(metrics?.target_revenue || 0)
     const jobsCompleted = Number(metrics?.jobs_completed || 0)
@@ -85,7 +96,7 @@ export function StatsCards() {
         icon: Phone,
         progress: callsHandled ? 100 : 0,
       },
-    ] as const
+    ]
   }, [metrics, activeTeams])
 
   return (

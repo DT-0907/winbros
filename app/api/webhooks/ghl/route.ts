@@ -1,13 +1,60 @@
 import { NextRequest, NextResponse } from "next/server"
+import { createHmac, timingSafeEqual } from "crypto"
 import { getSupabaseClient } from "@/lib/supabase"
 import { normalizePhoneNumber } from "@/lib/phone-utils"
+import { getApiKey } from "@/lib/user-api-keys"
+import { scheduleLeadFollowUp } from "@/lib/qstash"
+import { logSystemEvent } from "@/lib/system-events"
 
 // Minimal GoHighLevel webhook handler:
 // stores incoming leads into `public.leads`.
 export async function POST(request: NextRequest) {
+  // Get raw body for signature verification
+  let rawBody: string
+  try {
+    rawBody = await request.text()
+  } catch {
+    return NextResponse.json({ success: false, error: "Failed to read request body" }, { status: 400 })
+  }
+
+  // Verify webhook signature
+  const signature = request.headers.get("X-GHL-Signature")
+  const secret = getApiKey("ghlWebhookSecret") || process.env.GHL_WEBHOOK_SECRET
+
+  if (secret) {
+    if (!signature) {
+      console.error("[OSIRIS] GHL Webhook: Missing signature header")
+      return NextResponse.json(
+        { success: false, error: "Missing signature" },
+        { status: 401 }
+      )
+    }
+
+    const expectedSignature = createHmac("sha256", secret)
+      .update(rawBody)
+      .digest("hex")
+
+    // Use timingSafeEqual to prevent timing attacks
+    const signatureLower = signature.toLowerCase()
+    const expectedLower = expectedSignature.toLowerCase()
+
+    if (
+      signatureLower.length !== expectedLower.length ||
+      !timingSafeEqual(Buffer.from(signatureLower), Buffer.from(expectedLower))
+    ) {
+      console.error("[OSIRIS] GHL Webhook: Invalid signature")
+      return NextResponse.json(
+        { success: false, error: "Invalid signature" },
+        { status: 401 }
+      )
+    }
+  } else {
+    console.warn("[OSIRIS] GHL Webhook: No webhook secret configured, skipping signature validation")
+  }
+
   let payload: any
   try {
-    payload = await request.json()
+    payload = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ success: false, error: "Invalid JSON" }, { status: 400 })
   }
@@ -53,7 +100,7 @@ export async function POST(request: NextRequest) {
     .select("id")
     .single()
 
-  await client.from("leads").insert({
+  const { data: lead, error: leadError } = await client.from("leads").insert({
     source_id: String(sourceId),
     ghl_location_id: locationId ? String(locationId) : null,
     phone_number: phone,
@@ -64,8 +111,40 @@ export async function POST(request: NextRequest) {
     source: "meta",
     status: "new",
     form_data: payload,
+    followup_stage: 0,
+    followup_started_at: new Date().toISOString(),
+  }).select("id").single()
+
+  if (leadError) {
+    console.error("[OSIRIS] GHL Webhook: Error inserting lead:", leadError)
+    return NextResponse.json({ success: false, error: "Failed to create lead" }, { status: 500 })
+  }
+
+  // Log system event
+  await logSystemEvent({
+    source: "ghl",
+    event_type: "GHL_LEAD_RECEIVED",
+    message: `New lead from GHL: ${firstName || 'Unknown'} ${lastName || ''}`.trim(),
+    phone_number: phone,
+    metadata: {
+      lead_id: lead?.id,
+      source_id: sourceId,
+      location_id: locationId,
+    },
   })
 
-  return NextResponse.json({ success: true })
+  // Schedule the lead follow-up sequence
+  if (lead?.id) {
+    try {
+      const leadName = `${firstName || ''} ${lastName || ''}`.trim() || 'Customer'
+      await scheduleLeadFollowUp(String(lead.id), phone, leadName)
+      console.log(`[OSIRIS] GHL Webhook: Scheduled follow-up sequence for lead ${lead.id}`)
+    } catch (scheduleError) {
+      console.error("[OSIRIS] GHL Webhook: Error scheduling follow-up:", scheduleError)
+      // Don't fail the webhook, the lead is already created
+    }
+  }
+
+  return NextResponse.json({ success: true, leadId: lead?.id })
 }
 

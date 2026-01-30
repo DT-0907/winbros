@@ -1,4 +1,5 @@
 import { getClientConfig } from './client-config'
+import { getApiKey } from './user-api-keys'
 import type { Customer, Job } from './supabase'
 
 export type DocuSignResult = {
@@ -11,9 +12,9 @@ function isDocuSignEnabled(): boolean {
   const config = getClientConfig()
   return (
     config.features.docusign &&
-    Boolean(process.env.DOCUSIGN_ACCESS_TOKEN) &&
-    Boolean(process.env.DOCUSIGN_ACCOUNT_ID) &&
-    Boolean(process.env.DOCUSIGN_TEMPLATE_ID)
+    Boolean(getApiKey('docusignAccessToken')) &&
+    Boolean(getApiKey('docusignAccountId')) &&
+    Boolean(getApiKey('docusignTemplateId'))
   )
 }
 
@@ -37,10 +38,10 @@ export async function sendDocuSignContract(
     return { success: false, error: 'Customer email required for DocuSign' }
   }
 
-  const accessToken = process.env.DOCUSIGN_ACCESS_TOKEN as string
-  const accountId = process.env.DOCUSIGN_ACCOUNT_ID as string
-  const templateId = process.env.DOCUSIGN_TEMPLATE_ID as string
-  const baseUrl = process.env.DOCUSIGN_BASE_URL || 'https://www.docusign.net/restapi'
+  const accessToken = getApiKey('docusignAccessToken') as string
+  const accountId = getApiKey('docusignAccountId') as string
+  const templateId = getApiKey('docusignTemplateId') as string
+  const baseUrl = getApiKey('docusignBaseUrl') || 'https://www.docusign.net/restapi'
 
   const clientRoleName = process.env.DOCUSIGN_CLIENT_ROLE_NAME || 'Client'
   const ceoRoleName = process.env.DOCUSIGN_CEO_ROLE_NAME || 'CEO'

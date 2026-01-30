@@ -23,10 +23,14 @@ import { logSystemEvent } from '@/lib/system-events'
 import { mergeEstimateIntoNotes } from '@/lib/pricing-config'
 import { alertOwner } from '@/lib/owner-alert'
 import { getClientConfig } from '@/lib/client-config'
+import { requireAuth } from '@/lib/auth'
 
 const PAYMENT_LINK_DELAY_MS = Number(process.env.SMS_PAYMENT_LINK_DELAY_MS || '60000')
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+
   try {
     const body = await request.json()
     const { jobId } = body

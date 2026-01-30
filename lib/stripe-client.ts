@@ -6,6 +6,7 @@ import Stripe from 'stripe'
 import { Job, Customer } from './supabase'
 import { toE164 } from './phone-utils'
 import { getClientConfig } from './client-config'
+import { getApiKey } from './user-api-keys'
 import {
   PRICING_TABLE,
   type PricingRow,
@@ -19,7 +20,7 @@ import {
 
 // Initialize Stripe client
 function getStripeClient(): Stripe {
-  const rawKey = process.env.STRIPE_SECRET_KEY
+  const rawKey = getApiKey('stripeSecretKey')
   const secretKey = rawKey ? rawKey.replace(/[\r\n]/g, '').trim() : ''
 
   if (!secretKey) {

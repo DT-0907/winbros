@@ -27,7 +27,7 @@ type CalendarJob = {
   customer: string
   value: number
   team: string
-  status: "completed" | "in-progress" | "scheduled" | "cancelled"
+  status: "scheduled" | "confirmed" | "in-progress" | "completed" | "cancelled" | "rescheduled"
   date: string
 }
 
@@ -62,11 +62,13 @@ function mapJobForCalendar(row: ApiJob): CalendarJob {
   }
 }
 
-const statusColors = {
+const statusColors: Record<CalendarJob['status'], string> = {
   completed: "bg-success",
   "in-progress": "bg-primary",
   scheduled: "bg-muted-foreground",
+  confirmed: "bg-success/70",
   cancelled: "bg-destructive",
+  rescheduled: "bg-warning",
 }
 
 export default function JobsPage() {

@@ -1,5 +1,6 @@
 import type { Cleaner, Job } from './supabase'
 import { getClientConfig } from './client-config'
+import { getApiKey } from './user-api-keys'
 
 const CONNECTEAM_BASE_URL = 'https://api.connecteam.com'
 
@@ -13,13 +14,13 @@ function isConnecteamEnabled(): boolean {
   const config = getClientConfig()
   return (
     config.features.connecteam &&
-    Boolean(process.env.CONNECTEAM_API_KEY) &&
-    Boolean(process.env.CONNECTEAM_SCHEDULER_ID)
+    Boolean(getApiKey('connecteamApiKey')) &&
+    Boolean(getApiKey('connecteamSchedulerId'))
   )
 }
 
 function getTimeZone(): string {
-  return process.env.CONNECTEAM_TIMEZONE || 'America/Los_Angeles'
+  return getApiKey('timezone') || 'America/Los_Angeles'
 }
 
 function getTimezoneOffsetMs(date: Date, timeZone: string): number {
@@ -97,8 +98,8 @@ export async function createConnecteamShift(
     return { success: false, error: 'Connecteam not enabled' }
   }
 
-  const schedulerId = process.env.CONNECTEAM_SCHEDULER_ID as string
-  const apiKey = process.env.CONNECTEAM_API_KEY as string
+  const schedulerId = getApiKey('connecteamSchedulerId') as string
+  const apiKey = getApiKey('connecteamApiKey') as string
   const timeZone = getTimeZone()
 
   const userId = Number(cleaner.connecteam_user_id)

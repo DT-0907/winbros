@@ -1,5 +1,6 @@
 /**
  * VAPI Integration - Voice AI call transcript parsing
+ * Multi-tenant version - requires Tenant parameter for outbound calls
  *
  * Extracts booking information from call transcripts using AI
  */
@@ -7,7 +8,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { extractJsonObject, safeJsonParse } from './json-utils'
-import { extractPhoneFromVapiPayload } from './phone-utils'
+import { extractPhoneFromVapiPayload, toE164 } from './phone-utils'
+import type { Tenant } from './tenant'
 
 export interface BookingInfo {
   firstName?: string
@@ -36,6 +38,7 @@ export interface VapiCallData {
 
 /**
  * Extract booking information from a VAPI call transcript using AI
+ * Uses universal AI keys (ANTHROPIC_API_KEY, OPENAI_API_KEY)
  */
 export async function parseTranscript(transcript: string): Promise<BookingInfo> {
   const anthropicKey = process.env.ANTHROPIC_API_KEY
@@ -488,5 +491,144 @@ export function formatDateTimeForSMS(date: string | null, time: string | null): 
     return formattedDate
   } catch {
     return date + (time ? ` ${time}` : '')
+  }
+}
+
+/**
+ * Initiate an outbound call via VAPI
+ * Backwards compatible - can be called with:
+ * - (phoneNumber, customerName, context, leadId) - old pattern
+ * - (tenant, phoneNumber, customerName, context) - new pattern
+ */
+export async function initiateOutboundCall(
+  tenantOrPhone: Tenant | string,
+  phoneOrName: string,
+  nameOrContext?: string | { leadId?: string; jobId?: string },
+  contextOrLeadId?: { leadId?: string; jobId?: string } | string
+): Promise<{ success: boolean; callId?: string; error?: string }> {
+  // Import getDefaultTenant dynamically to avoid circular dependencies
+  const { getDefaultTenant } = await import('./tenant')
+
+  // Determine if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let phoneNumber: string
+  let customerName: string
+  let context: { leadId?: string; jobId?: string } | undefined
+
+  if (typeof tenantOrPhone === 'string') {
+    // Old calling pattern: initiateOutboundCall(phoneNumber, customerName, context?, leadId?)
+    tenant = await getDefaultTenant()
+    phoneNumber = tenantOrPhone
+    customerName = phoneOrName
+    if (typeof nameOrContext === 'object') {
+      context = nameOrContext
+    } else if (typeof contextOrLeadId === 'string') {
+      context = { leadId: contextOrLeadId }
+    }
+  } else {
+    // New calling pattern: initiateOutboundCall(tenant, phoneNumber, customerName, context?)
+    tenant = tenantOrPhone
+    phoneNumber = phoneOrName
+    customerName = typeof nameOrContext === 'string' ? nameOrContext : ''
+    context = typeof contextOrLeadId === 'object' ? contextOrLeadId : undefined
+  }
+
+  if (!tenant) {
+    console.error('No tenant found - cannot initiate outbound call')
+    return { success: false, error: 'No tenant configured' }
+  }
+
+  try {
+    // Check if tenant has VAPI configured
+    if (!tenant.workflow_config.use_vapi_outbound) {
+      console.log(`[${tenant.slug}] VAPI outbound calls disabled in workflow config`)
+      return { success: false, error: 'VAPI outbound calls disabled for this tenant' }
+    }
+
+    // Get required API keys from tenant
+    const vapiApiKey = tenant.vapi_api_key
+    if (!vapiApiKey) {
+      console.error(`[${tenant.slug}] VAPI API key not configured`)
+      return { success: false, error: 'VAPI API key not configured' }
+    }
+
+    const outboundPhoneId = tenant.vapi_phone_id
+    if (!outboundPhoneId) {
+      console.error(`[${tenant.slug}] VAPI phone ID not configured`)
+      return { success: false, error: 'VAPI phone ID not configured' }
+    }
+
+    const assistantId = tenant.vapi_assistant_id
+    if (!assistantId) {
+      console.error(`[${tenant.slug}] VAPI assistant ID not configured`)
+      return { success: false, error: 'VAPI assistant ID not configured' }
+    }
+
+    // Normalize phone number to E.164 format
+    const normalizedPhone = toE164(phoneNumber)
+    if (!normalizedPhone) {
+      console.error(`[${tenant.slug}] Invalid phone number format:`, phoneNumber)
+      return { success: false, error: 'Invalid phone number format' }
+    }
+
+    // Build metadata from context
+    const metadata: Record<string, string> = {
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+    }
+    if (context?.leadId) {
+      metadata.leadId = context.leadId
+    }
+    if (context?.jobId) {
+      metadata.jobId = context.jobId
+    }
+
+    // Make the API call to VAPI
+    console.log(`[${tenant.slug}] Initiating outbound call via VAPI:`, {
+      phoneNumber: normalizedPhone,
+      customerName,
+      assistantId,
+      outboundPhoneId,
+    })
+
+    const response = await fetch('https://api.vapi.ai/call', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${vapiApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        phoneNumberId: outboundPhoneId,
+        assistantId: assistantId,
+        customer: {
+          number: normalizedPhone,
+          name: customerName,
+        },
+        metadata,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`[${tenant.slug}] VAPI API error:`, response.status, errorText)
+      return {
+        success: false,
+        error: `VAPI API error: ${response.status} - ${errorText}`,
+      }
+    }
+
+    const data = await response.json()
+    console.log(`[${tenant.slug}] VAPI outbound call initiated successfully:`, data)
+
+    return {
+      success: true,
+      callId: data.id || data.callId,
+    }
+  } catch (error) {
+    console.error(`[${tenant.slug}] Error initiating outbound call:`, error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+    }
   }
 }

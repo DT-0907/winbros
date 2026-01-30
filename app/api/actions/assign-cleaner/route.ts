@@ -15,8 +15,13 @@ import {
   updateJob,
 } from '@/lib/supabase'
 import { notifyCleanerAssignment } from '@/lib/telegram'
+import { requireAuth } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   try {
     const body = await request.json()
     const { jobId, cleanerId } = body

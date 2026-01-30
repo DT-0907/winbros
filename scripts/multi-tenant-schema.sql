@@ -1,0 +1,553 @@
+-- ============================================================================
+-- MULTI-TENANT SCHEMA FOR CLEANING BUSINESS AUTOMATION PLATFORM
+-- ============================================================================
+-- WARNING: This script DROPS all existing tables and recreates them.
+-- Run this only on a fresh database or when you want to start fresh.
+--
+-- After running this, run seed-winbros.sql to add the first tenant.
+-- ============================================================================
+
+-- Drop existing tables in reverse dependency order
+DROP TABLE IF EXISTS system_events CASCADE;
+DROP TABLE IF EXISTS cleaner_assignments CASCADE;
+DROP TABLE IF EXISTS upsells CASCADE;
+DROP TABLE IF EXISTS tips CASCADE;
+DROP TABLE IF EXISTS team_members CASCADE;
+DROP TABLE IF EXISTS teams CASCADE;
+DROP TABLE IF EXISTS messages CASCADE;
+DROP TABLE IF EXISTS leads CASCADE;
+DROP TABLE IF EXISTS jobs CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS cleaners CASCADE;
+DROP TABLE IF EXISTS tenants CASCADE;
+
+-- ============================================================================
+-- TENANTS TABLE - Core multi-tenancy table
+-- ============================================================================
+-- Each row represents one cleaning business client using this platform.
+-- All other tables reference this via tenant_id.
+-- ============================================================================
+
+CREATE TABLE tenants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- Basic Info
+  name TEXT NOT NULL,                              -- Display name: "WinBros Cleaning"
+  slug TEXT UNIQUE NOT NULL,                       -- URL-safe identifier: "winbros"
+
+  -- Authentication (for dashboard login)
+  email TEXT UNIQUE,                               -- Login email
+  password_hash TEXT,                              -- Hashed password (use bcrypt)
+
+  -- Business Info
+  business_name TEXT,                              -- Full business name for customer-facing messages
+  business_name_short TEXT,                        -- Short name for SMS
+  service_area TEXT,                               -- "Los Angeles", "San Diego", etc.
+  sdr_persona TEXT DEFAULT 'Mary',                 -- Name used in automated messages
+
+  -- ========== API KEYS (Tenant-Specific) ==========
+
+  -- OpenPhone (SMS/Calls)
+  openphone_api_key TEXT,
+  openphone_phone_id TEXT,                         -- Phone number ID for sending
+  openphone_phone_number TEXT,                     -- Actual phone number for display
+
+  -- VAPI (AI Voice)
+  vapi_api_key TEXT,
+  vapi_assistant_id TEXT,                          -- Inbound assistant
+  vapi_phone_id TEXT,                              -- VAPI phone number ID
+
+  -- HousecallPro (optional - some clients don't use it)
+  housecall_pro_api_key TEXT,
+  housecall_pro_company_id TEXT,
+  housecall_pro_webhook_secret TEXT,
+
+  -- Stripe (Payments)
+  stripe_secret_key TEXT,
+  stripe_webhook_secret TEXT,
+
+  -- GoHighLevel (optional)
+  ghl_location_id TEXT,
+  ghl_webhook_secret TEXT,
+
+  -- Telegram (for cleaner notifications)
+  telegram_bot_token TEXT,                         -- Each tenant can have their own bot
+  owner_telegram_chat_id TEXT,                     -- Owner's chat ID for escalations
+
+  -- Wave Invoicing (optional)
+  wave_api_token TEXT,
+  wave_business_id TEXT,
+  wave_income_account_id TEXT,
+
+  -- ========== WORKFLOW CONFIGURATION ==========
+
+  workflow_config JSONB NOT NULL DEFAULT '{
+    "use_housecall_pro": false,
+    "use_vapi_inbound": true,
+    "use_vapi_outbound": true,
+    "use_ghl": false,
+    "use_stripe": true,
+    "use_wave": false,
+
+    "lead_followup_enabled": true,
+    "lead_followup_stages": 5,
+    "skip_calls_for_sms_leads": true,
+    "followup_delays_minutes": [0, 10, 15, 20, 30],
+
+    "post_cleaning_followup_enabled": true,
+    "post_cleaning_delay_hours": 2,
+
+    "monthly_followup_enabled": true,
+    "monthly_followup_days": 30,
+    "monthly_followup_discount": "15%",
+
+    "cleaner_assignment_auto": true,
+    "require_deposit": true,
+    "deposit_percentage": 50
+  }'::jsonb,
+
+  -- Owner Contact (for escalations)
+  owner_phone TEXT,
+  owner_email TEXT,
+
+  -- Google Review Link
+  google_review_link TEXT,
+
+  -- Status
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index for slug lookups (webhook routing)
+CREATE INDEX idx_tenants_slug ON tenants(slug);
+CREATE INDEX idx_tenants_active ON tenants(active) WHERE active = TRUE;
+
+-- ============================================================================
+-- CLEANERS TABLE
+-- ============================================================================
+
+CREATE TABLE cleaners (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  name TEXT NOT NULL,
+  phone TEXT,
+  email TEXT,
+  telegram_id TEXT,                                -- For Telegram notifications
+
+  -- Location for VRP assignment
+  home_address TEXT,
+  home_lat DECIMAL(10, 8),
+  home_lng DECIMAL(11, 8),
+
+  -- Capacity
+  max_jobs_per_day INTEGER DEFAULT 3,
+
+  -- Status
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Unique cleaner per tenant by phone
+  UNIQUE(tenant_id, phone)
+);
+
+CREATE INDEX idx_cleaners_tenant ON cleaners(tenant_id);
+CREATE INDEX idx_cleaners_telegram ON cleaners(telegram_id);
+CREATE INDEX idx_cleaners_active ON cleaners(tenant_id, active) WHERE active = TRUE;
+
+-- ============================================================================
+-- CUSTOMERS TABLE
+-- ============================================================================
+
+CREATE TABLE customers (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  phone_number TEXT NOT NULL,
+  first_name TEXT,
+  last_name TEXT,
+  email TEXT,
+  address TEXT,
+
+  -- Customer metadata
+  notes TEXT,
+  tags TEXT[],
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Unique customer per tenant by phone
+  UNIQUE(tenant_id, phone_number)
+);
+
+CREATE INDEX idx_customers_tenant ON customers(tenant_id);
+CREATE INDEX idx_customers_phone ON customers(tenant_id, phone_number);
+
+-- ============================================================================
+-- JOBS TABLE
+-- ============================================================================
+
+CREATE TABLE jobs (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Customer link
+  customer_id INTEGER REFERENCES customers(id),
+  phone_number TEXT,
+
+  -- Job details
+  address TEXT,
+  service_type TEXT DEFAULT 'Standard Cleaning',
+  date DATE,
+  scheduled_at TEXT,                               -- Time string like "10:00 AM"
+
+  -- Status tracking
+  status TEXT DEFAULT 'pending' CHECK (status IN (
+    'pending', 'scheduled', 'in_progress', 'completed', 'cancelled'
+  )),
+  booked BOOLEAN DEFAULT FALSE,
+  paid BOOLEAN DEFAULT FALSE,
+
+  -- Payment tracking
+  payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN (
+    'pending', 'deposit_paid', 'fully_paid'
+  )),
+  stripe_payment_intent_id TEXT,
+  stripe_checkout_session_id TEXT,
+
+  -- Assignment tracking
+  cleaner_id INTEGER REFERENCES cleaners(id),
+  team_id INTEGER,                                 -- Will reference teams table
+  confirmed_at TIMESTAMPTZ,
+  cleaner_confirmed BOOLEAN DEFAULT FALSE,
+  customer_notified BOOLEAN DEFAULT FALSE,
+
+  -- Completion tracking
+  completed_at TIMESTAMPTZ,
+
+  -- Follow-up tracking
+  followup_sent_at TIMESTAMPTZ,
+  review_requested_at TIMESTAMPTZ,
+  monthly_followup_sent_at TIMESTAMPTZ,
+
+  -- External IDs
+  housecall_pro_job_id TEXT,
+
+  -- Metadata
+  notes TEXT,
+  amount DECIMAL(10, 2),
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_jobs_tenant ON jobs(tenant_id);
+CREATE INDEX idx_jobs_customer ON jobs(customer_id);
+CREATE INDEX idx_jobs_cleaner ON jobs(cleaner_id);
+CREATE INDEX idx_jobs_date ON jobs(tenant_id, date);
+CREATE INDEX idx_jobs_status ON jobs(tenant_id, status);
+CREATE INDEX idx_jobs_phone ON jobs(tenant_id, phone_number);
+CREATE INDEX idx_jobs_followup ON jobs(tenant_id, completed_at, followup_sent_at)
+  WHERE completed_at IS NOT NULL AND followup_sent_at IS NULL;
+
+-- ============================================================================
+-- LEADS TABLE
+-- ============================================================================
+
+CREATE TABLE leads (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Source tracking
+  source_id TEXT,                                  -- External ID from source system
+  source TEXT NOT NULL CHECK (source IN (
+    'housecall_pro', 'ghl', 'meta', 'vapi', 'sms', 'website', 'manual'
+  )),
+  ghl_location_id TEXT,
+
+  -- Contact info
+  phone_number TEXT NOT NULL,
+  customer_id INTEGER REFERENCES customers(id),
+  first_name TEXT,
+  last_name TEXT,
+  email TEXT,
+
+  -- Lead status
+  status TEXT DEFAULT 'new' CHECK (status IN (
+    'new', 'contacted', 'qualified', 'booked', 'lost', 'unresponsive'
+  )),
+
+  -- Follow-up tracking
+  followup_stage INTEGER DEFAULT 0,
+  followup_started_at TIMESTAMPTZ,
+  last_contact_at TIMESTAMPTZ,
+  next_followup_at TIMESTAMPTZ,
+
+  -- Payment
+  stripe_payment_link TEXT,
+
+  -- Conversion
+  converted_to_job_id INTEGER REFERENCES jobs(id),
+
+  -- Raw data from source
+  form_data JSONB,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_leads_tenant ON leads(tenant_id);
+CREATE INDEX idx_leads_phone ON leads(tenant_id, phone_number);
+CREATE INDEX idx_leads_status ON leads(tenant_id, status);
+CREATE INDEX idx_leads_source ON leads(tenant_id, source);
+CREATE INDEX idx_leads_followup ON leads(tenant_id, status, followup_stage, next_followup_at)
+  WHERE status NOT IN ('booked', 'lost');
+
+-- ============================================================================
+-- MESSAGES TABLE
+-- ============================================================================
+
+CREATE TABLE messages (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Direction and channel
+  direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+  channel TEXT NOT NULL CHECK (channel IN ('sms', 'call', 'email', 'vapi')),
+
+  -- Participants
+  from_number TEXT,
+  to_number TEXT,
+
+  -- Content
+  body TEXT,
+  media_urls TEXT[],
+
+  -- Status
+  status TEXT DEFAULT 'sent',
+
+  -- Links
+  customer_id INTEGER REFERENCES customers(id),
+  job_id INTEGER REFERENCES jobs(id),
+  lead_id INTEGER REFERENCES leads(id),
+
+  -- External IDs
+  openphone_message_id TEXT,
+  vapi_call_id TEXT,
+
+  -- Call-specific
+  call_duration INTEGER,
+  call_recording_url TEXT,
+  call_transcript TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_messages_tenant ON messages(tenant_id);
+CREATE INDEX idx_messages_phone ON messages(tenant_id, from_number);
+CREATE INDEX idx_messages_customer ON messages(customer_id);
+CREATE INDEX idx_messages_created ON messages(tenant_id, created_at DESC);
+
+-- ============================================================================
+-- TEAMS TABLE
+-- ============================================================================
+
+CREATE TABLE teams (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  name TEXT NOT NULL,
+  active BOOLEAN DEFAULT TRUE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_teams_tenant ON teams(tenant_id);
+
+-- Add foreign key to jobs now that teams exists
+ALTER TABLE jobs ADD CONSTRAINT jobs_team_fk FOREIGN KEY (team_id) REFERENCES teams(id);
+
+-- ============================================================================
+-- TEAM MEMBERS TABLE
+-- ============================================================================
+
+CREATE TABLE team_members (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  cleaner_id INTEGER NOT NULL REFERENCES cleaners(id) ON DELETE CASCADE,
+
+  role TEXT DEFAULT 'member' CHECK (role IN ('lead', 'member')),
+  is_active BOOLEAN DEFAULT TRUE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(team_id, cleaner_id)
+);
+
+CREATE INDEX idx_team_members_tenant ON team_members(tenant_id);
+CREATE INDEX idx_team_members_team ON team_members(team_id);
+CREATE INDEX idx_team_members_cleaner ON team_members(cleaner_id);
+
+-- ============================================================================
+-- TIPS TABLE
+-- ============================================================================
+
+CREATE TABLE tips (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  job_id INTEGER REFERENCES jobs(id),
+  team_id INTEGER REFERENCES teams(id),
+  cleaner_id INTEGER REFERENCES cleaners(id),
+
+  amount DECIMAL(10, 2) NOT NULL,
+  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api')),
+  notes TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_tips_tenant ON tips(tenant_id);
+CREATE INDEX idx_tips_job ON tips(job_id);
+
+-- ============================================================================
+-- UPSELLS TABLE
+-- ============================================================================
+
+CREATE TABLE upsells (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  job_id INTEGER REFERENCES jobs(id),
+  team_id INTEGER REFERENCES teams(id),
+  cleaner_id INTEGER REFERENCES cleaners(id),
+
+  upsell_type TEXT NOT NULL,
+  value DECIMAL(10, 2) DEFAULT 0,
+  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api')),
+  notes TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_upsells_tenant ON upsells(tenant_id);
+CREATE INDEX idx_upsells_job ON upsells(job_id);
+
+-- ============================================================================
+-- CLEANER ASSIGNMENTS TABLE
+-- ============================================================================
+
+CREATE TABLE cleaner_assignments (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  cleaner_id INTEGER NOT NULL REFERENCES cleaners(id),
+
+  status TEXT DEFAULT 'pending' CHECK (status IN (
+    'pending', 'confirmed', 'declined', 'cancelled'
+  )),
+
+  -- Assignment metadata
+  distance_km DECIMAL(10, 2),
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  responded_at TIMESTAMPTZ,
+
+  -- Telegram notification tracking
+  telegram_message_id TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_cleaner_assignments_tenant ON cleaner_assignments(tenant_id);
+CREATE INDEX idx_cleaner_assignments_job ON cleaner_assignments(job_id);
+CREATE INDEX idx_cleaner_assignments_cleaner ON cleaner_assignments(cleaner_id);
+CREATE INDEX idx_cleaner_assignments_pending ON cleaner_assignments(tenant_id, status)
+  WHERE status = 'pending';
+
+-- ============================================================================
+-- SYSTEM EVENTS TABLE
+-- ============================================================================
+
+CREATE TABLE system_events (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,  -- Can be NULL for system-wide events
+
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  message TEXT,
+
+  -- Optional links
+  phone_number TEXT,
+  job_id TEXT,
+  lead_id TEXT,
+  cleaner_id TEXT,
+
+  -- Extra data
+  metadata JSONB,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_system_events_tenant ON system_events(tenant_id);
+CREATE INDEX idx_system_events_type ON system_events(event_type);
+CREATE INDEX idx_system_events_created ON system_events(created_at DESC);
+
+-- ============================================================================
+-- HELPER FUNCTIONS
+-- ============================================================================
+
+-- Function to get tenant by slug (used in webhooks)
+CREATE OR REPLACE FUNCTION get_tenant_by_slug(p_slug TEXT)
+RETURNS tenants AS $$
+  SELECT * FROM tenants WHERE slug = p_slug AND active = TRUE LIMIT 1;
+$$ LANGUAGE SQL STABLE;
+
+-- Function to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Apply updated_at triggers
+CREATE TRIGGER tenants_updated_at BEFORE UPDATE ON tenants
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER cleaners_updated_at BEFORE UPDATE ON cleaners
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER customers_updated_at BEFORE UPDATE ON customers
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER jobs_updated_at BEFORE UPDATE ON jobs
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER leads_updated_at BEFORE UPDATE ON leads
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ============================================================================
+-- ROW LEVEL SECURITY (Optional - enable if using Supabase Auth)
+-- ============================================================================
+
+-- Uncomment these if you want RLS policies:
+-- ALTER TABLE cleaners ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- DONE
+-- ============================================================================
+-- Next steps:
+-- 1. Run this script in Supabase SQL Editor
+-- 2. Run seed-winbros.sql to add WinBros as the first tenant
+-- 3. Run add-tenant-template.sql (with modifications) for additional tenants
+-- ============================================================================

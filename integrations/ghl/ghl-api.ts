@@ -6,10 +6,11 @@
  */
 
 import { GHL_API_CONFIG } from './constants'
+import { getApiKey } from '@/lib/user-api-keys'
 
 // GHL API headers
 function getHeaders(): HeadersInit {
-  const apiKey = process.env.GHL_API_KEY
+  const apiKey = getApiKey('ghlApiKey')
   if (!apiKey) {
     throw new Error('GHL_API_KEY not configured')
   }
@@ -23,7 +24,7 @@ function getHeaders(): HeadersInit {
 
 // Get location ID from env
 function getLocationId(): string {
-  const locationId = process.env.GHL_LOCATION_ID
+  const locationId = getApiKey('ghlLocationId')
   if (!locationId) {
     throw new Error('GHL_LOCATION_ID not configured')
   }

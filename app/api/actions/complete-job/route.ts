@@ -22,6 +22,7 @@ import { findOrCreateStripeCustomer, resolveStripeChargeCents } from '@/lib/stri
 import { logSystemEvent } from '@/lib/system-events'
 import { getPaymentTotalsFromNotes } from '@/lib/pricing-config'
 import { getClientConfig } from '@/lib/client-config'
+import { requireAuth } from '@/lib/auth'
 
 function getStripeClient(): Stripe {
   const rawKey = process.env.STRIPE_SECRET_KEY
@@ -37,6 +38,9 @@ function getStripeClient(): Stripe {
 }
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+
   try {
     const body = await request.json()
     const { jobId } = body

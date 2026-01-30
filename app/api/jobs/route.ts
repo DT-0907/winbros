@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Job, ApiResponse, PaginatedResponse } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 function mapDbStatusToApi(status: string | null | undefined): Job["status"] {
   switch ((status || "").toLowerCase()) {
@@ -47,6 +48,10 @@ function toTimeHHMM(value: unknown): string {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const date = searchParams.get("date")
   const team_id = searchParams.get("team_id")
@@ -61,6 +66,7 @@ export async function GET(request: NextRequest) {
   let query = client
     .from("jobs")
     .select("*, customers (*), teams ( id, name )", { count: "exact" })
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
 
   if (date) query = query.eq("date", date)
@@ -121,6 +127,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   try {
     const body = await request.json()
 
@@ -145,6 +155,7 @@ export async function POST(request: NextRequest) {
         const created = await client
           .from("customers")
           .insert({
+            user_id: user.id,
             phone_number: phone,
             first_name,
             last_name,
@@ -163,6 +174,7 @@ export async function POST(request: NextRequest) {
     const inserted = await client
       .from("jobs")
       .insert({
+        user_id: user.id,
         customer_id: customerId,
         phone_number: phone,
         address: body.address || undefined,

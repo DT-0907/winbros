@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
+import { createHmac, timingSafeEqual } from "crypto"
 import type { HousecallProWebhookPayload, ApiResponse } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
 import { normalizePhoneNumber } from "@/lib/phone-utils"
+import { getApiKey } from "@/lib/user-api-keys"
+import { scheduleLeadFollowUp } from "@/lib/qstash"
 
 /**
  * Webhook handler for Housecall Pro events
@@ -16,11 +19,45 @@ import { normalizePhoneNumber } from "@/lib/phone-utils"
  */
 export async function POST(request: NextRequest) {
   try {
-    // Verify webhook signature (implement based on HCP's signature method)
-    const signature = request.headers.get("x-hcp-signature")
-    // TODO: Verify signature
+    // Get raw body for signature verification
+    const rawBody = await request.text()
 
-    const payload: HousecallProWebhookPayload = await request.json()
+    // Verify webhook signature
+    const signature = request.headers.get("X-HousecallPro-Signature")
+    const secret = getApiKey("housecallProWebhookSecret") || process.env.HOUSECALL_PRO_WEBHOOK_SECRET
+
+    if (secret) {
+      if (!signature) {
+        console.error("[OSIRIS] HCP Webhook: Missing signature header")
+        return NextResponse.json(
+          { success: false, error: "Missing signature" },
+          { status: 401 }
+        )
+      }
+
+      const expectedSignature = createHmac("sha256", secret)
+        .update(rawBody)
+        .digest("hex")
+
+      // Use timingSafeEqual to prevent timing attacks
+      const signatureLower = signature.toLowerCase()
+      const expectedLower = expectedSignature.toLowerCase()
+
+      if (
+        signatureLower.length !== expectedLower.length ||
+        !timingSafeEqual(Buffer.from(signatureLower), Buffer.from(expectedLower))
+      ) {
+        console.error("[OSIRIS] HCP Webhook: Invalid signature")
+        return NextResponse.json(
+          { success: false, error: "Invalid signature" },
+          { status: 401 }
+        )
+      }
+    } else {
+      console.warn("[OSIRIS] HCP Webhook: No webhook secret configured, skipping signature validation")
+    }
+
+    const payload: HousecallProWebhookPayload = JSON.parse(rawBody)
     const { event, data, timestamp } = payload
 
     console.log(`[OSIRIS] HCP Webhook received: ${event}`, { timestamp })
@@ -123,7 +160,10 @@ export async function POST(request: NextRequest) {
         {
           const jobId = (data as any)?.job?.id || (data as any)?.job_id || (data as any)?.id
           if (jobId != null) {
-            await client.from("jobs").update({ status: "completed" }).eq("id", Number(jobId))
+            await client.from("jobs").update({
+              status: "completed",
+              completed_at: new Date().toISOString()
+            }).eq("id", Number(jobId))
           }
         }
         break
@@ -159,11 +199,90 @@ export async function POST(request: NextRequest) {
         break
 
       case "payment.received":
+      case "invoice.paid":
         console.log("[OSIRIS] Payment received for job")
         {
           const jobId = (data as any)?.job?.id || (data as any)?.job_id || (data as any)?.id
           if (jobId != null) {
-            await client.from("jobs").update({ paid: true }).eq("id", Number(jobId))
+            await client.from("jobs").update({
+              paid: true,
+              payment_status: 'fully_paid'
+            }).eq("id", Number(jobId))
+          }
+        }
+        break
+
+      case "lead.created":
+        console.log("[OSIRIS] New lead created in HCP")
+        if (phone) {
+          // Upsert customer
+          const { data: customer } = await client
+            .from("customers")
+            .upsert(
+              { phone_number: phone, first_name: firstName, last_name: lastName, email, address },
+              { onConflict: "phone_number" }
+            )
+            .select("id")
+            .single()
+
+          // Create lead record
+          const hcpSourceId = (data as any)?.lead?.id || (data as any)?.id || `hcp-${Date.now()}`
+          const { data: lead } = await client.from("leads").insert({
+            source_id: String(hcpSourceId),
+            phone_number: phone,
+            customer_id: customer?.id ?? null,
+            first_name: firstName || null,
+            last_name: lastName || null,
+            email: email || null,
+            source: "housecall_pro",
+            status: "new",
+            form_data: data,
+            followup_stage: 0,
+            followup_started_at: new Date().toISOString(),
+          }).select("id").single()
+
+          // Log system event
+          await client.from("system_events").insert({
+            source: "housecall_pro",
+            event_type: "HCP_LEAD_RECEIVED",
+            message: `New lead from HousecallPro: ${firstName || 'Unknown'} ${lastName || ''}`.trim(),
+            phone_number: phone,
+            metadata: { hcp_lead_id: hcpSourceId, lead_id: lead?.id }
+          })
+
+          // Schedule the lead follow-up sequence
+          if (lead?.id) {
+            try {
+              const leadName = `${firstName || ''} ${lastName || ''}`.trim() || 'Customer'
+              await scheduleLeadFollowUp(String(lead.id), phone, leadName)
+              console.log(`[OSIRIS] HCP Webhook: Scheduled follow-up sequence for lead ${lead.id}`)
+            } catch (scheduleError) {
+              console.error("[OSIRIS] HCP Webhook: Error scheduling follow-up:", scheduleError)
+            }
+          }
+        }
+        break
+
+      case "lead.updated":
+        console.log("[OSIRIS] Lead updated in HCP")
+        {
+          const leadId = (data as any)?.lead?.id || (data as any)?.id
+          if (leadId && phone) {
+            // Update lead status if present
+            const hcpStatus = (data as any)?.lead?.status || (data as any)?.status
+            let status: string | undefined
+            if (hcpStatus === "won" || hcpStatus === "converted") {
+              status = "booked"
+            } else if (hcpStatus === "lost") {
+              status = "lost"
+            }
+
+            if (status) {
+              await client
+                .from("leads")
+                .update({ status, form_data: data })
+                .eq("source_id", String(leadId))
+            }
           }
         }
         break

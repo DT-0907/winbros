@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Lead, ApiResponse, PaginatedResponse } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 function mapLead(row: any): Lead {
   const name =
@@ -46,6 +47,10 @@ function mapLead(row: any): Lead {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const source = searchParams.get("source")
   const status = searchParams.get("status")
@@ -59,6 +64,7 @@ export async function GET(request: NextRequest) {
   let query = client
     .from("leads")
     .select("*", { count: "exact" })
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
 
   if (source) query = query.eq("source", source)
@@ -85,6 +91,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   try {
     const body = await request.json()
 
@@ -98,6 +108,7 @@ export async function POST(request: NextRequest) {
     const inserted = await client
       .from("leads")
       .insert({
+        user_id: user.id,
         source_id: body.source_id || `manual-${Date.now()}`,
         ghl_location_id: body.ghl_location_id || null,
         phone_number: body.phone || body.phone_number || "",

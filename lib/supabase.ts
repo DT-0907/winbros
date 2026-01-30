@@ -2,8 +2,9 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { toE164 } from './phone-utils'
 import { getClientConfig } from './client-config'
 import { syncHubSpotContact, syncHubSpotDeal } from './hubspot'
-// IMPORTANT: Explicit extension to avoid Next resolving `telegram.tsx`.
-import { notifyJobDetailsChange, type JobChange } from './telegram.ts'
+// IMPORTANT: Explicit path to avoid Next resolving `telegram.tsx`.
+// @ts-ignore - explicit extension needed to avoid Next.js resolving to wrong file
+import { notifyJobDetailsChange, type JobChange } from './telegram'
 import { logSystemEvent } from './system-events'
 
 type HubSpotSyncOptions = {
@@ -55,6 +56,16 @@ export interface Job {
   docusign_status?: string
   created_at?: string
   updated_at?: string
+  // Lead automation fields
+  payment_status?: 'pending' | 'deposit_paid' | 'fully_paid'
+  stripe_payment_intent_id?: string
+  confirmed_at?: string
+  cleaner_confirmed?: boolean
+  customer_notified?: boolean
+  followup_sent_at?: string
+  review_requested_at?: string
+  monthly_followup_sent_at?: string
+  completed_at?: string
 }
 
 export interface Cleaner {
@@ -593,7 +604,8 @@ export async function appendSpotlessResponse(
 // Job operations
 export async function createJob(
   jobData: Partial<Job>,
-  options: HubSpotSyncOptions = {}
+  options: HubSpotSyncOptions = {},
+  userId?: number
 ): Promise<Job | null> {
   const client = getSupabaseClient()
   const dbPhone = toE164(jobData.phone_number)
@@ -607,6 +619,7 @@ export async function createJob(
     .from('jobs')
     .insert({
       ...jobData,
+      user_id: userId,
       phone_number: dbPhone,
       status: jobData.status || 'lead',
       booked: jobData.booked ?? false,
@@ -772,7 +785,7 @@ export async function updateJobWithNotifications(
   return updatedJob
 }
 
-export async function getJobsByPhone(phoneNumber: string): Promise<Job[]> {
+export async function getJobsByPhone(phoneNumber: string, userId?: number): Promise<Job[]> {
   const client = getSupabaseClient()
   const dbPhone = toE164(phoneNumber)
 
@@ -781,12 +794,18 @@ export async function getJobsByPhone(phoneNumber: string): Promise<Job[]> {
     return []
   }
 
-  const { data, error } = await client
+  let query = client
     .from('jobs')
     .select('*')
     .eq('phone_number', dbPhone)
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
+
+  if (userId) {
+    query = query.eq('user_id', userId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('Error fetching jobs:', error)
@@ -829,14 +848,20 @@ export async function getJobByStripeInvoiceId(invoiceId: string): Promise<Job | 
   return data
 }
 
-export async function getAllJobs(): Promise<Job[]> {
+export async function getAllJobs(userId?: number): Promise<Job[]> {
   const client = getSupabaseClient()
 
-  const { data, error } = await client
+  let query = client
     .from('jobs')
     .select('*')
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
+
+  if (userId) {
+    query = query.eq('user_id', userId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('Error fetching all jobs:', error)
@@ -847,14 +872,20 @@ export async function getAllJobs(): Promise<Job[]> {
 }
 
 // Cleaner operations
-export async function getCleaners(): Promise<Cleaner[]> {
+export async function getCleaners(userId?: number): Promise<Cleaner[]> {
   const client = getSupabaseClient()
 
-  const { data, error } = await client
+  let query = client
     .from('cleaners')
     .select('*')
     .eq('active', true)
     .is('deleted_at', null)
+
+  if (userId) {
+    query = query.eq('user_id', userId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('Error fetching cleaners:', error)
@@ -1419,6 +1450,7 @@ export interface GHLLead {
   phone_number: string
   customer_id?: string
   job_id?: string
+  converted_to_job_id?: string
   first_name?: string
   last_name?: string
   email?: string
@@ -1451,7 +1483,7 @@ export interface GHLFollowUp {
   created_at?: string
 }
 
-export async function createGHLLead(leadData: Partial<GHLLead>): Promise<GHLLead | null> {
+export async function createGHLLead(leadData: Partial<GHLLead>, userId?: number): Promise<GHLLead | null> {
   const client = getSupabaseClient()
   const dbPhone = toE164(leadData.phone_number)
 
@@ -1464,6 +1496,7 @@ export async function createGHLLead(leadData: Partial<GHLLead>): Promise<GHLLead
     .from('leads')
     .insert({
       ...leadData,
+      user_id: userId,
       phone_number: dbPhone,
       status: leadData.status || 'new',
       call_attempt_count: leadData.call_attempt_count ?? 0,
@@ -1564,14 +1597,20 @@ export async function updateGHLLead(
   return data
 }
 
-export async function getActiveGHLLeads(): Promise<GHLLead[]> {
+export async function getActiveGHLLeads(userId?: number): Promise<GHLLead[]> {
   const client = getSupabaseClient()
 
-  const { data, error } = await client
+  let query = client
     .from('leads')
     .select('*')
     .not('status', 'in', '("booked","lost","unqualified")')
     .order('created_at', { ascending: false })
+
+  if (userId) {
+    query = query.eq('user_id', userId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('Error fetching active GHL leads:', error)

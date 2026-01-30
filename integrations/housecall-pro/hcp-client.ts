@@ -5,6 +5,7 @@
  */
 
 import { HCP_API_CONFIG, HCP_ENDPOINTS } from './constants'
+import { getApiKey } from '@/lib/user-api-keys'
 import type {
   HCPJob,
   HCPCustomer,
@@ -16,7 +17,7 @@ import type {
 
 // Get API headers
 function getHeaders(): HeadersInit {
-  const apiKey = process.env.HOUSECALL_PRO_API_KEY
+  const apiKey = getApiKey('housecallProApiKey')
   if (!apiKey) {
     throw new Error('HOUSECALL_PRO_API_KEY not configured')
   }
@@ -30,7 +31,7 @@ function getHeaders(): HeadersInit {
 
 // Get company ID
 function getCompanyId(): string {
-  const companyId = process.env.HOUSECALL_PRO_COMPANY_ID
+  const companyId = getApiKey('housecallProCompanyId')
   if (!companyId) {
     throw new Error('HOUSECALL_PRO_COMPANY_ID not configured')
   }

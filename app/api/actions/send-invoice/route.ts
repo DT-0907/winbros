@@ -22,8 +22,12 @@ import { alertOwner } from '@/lib/owner-alert'
 import { getClientConfig } from '@/lib/client-config'
 import { sendDocuSignContract } from '@/lib/docusign'
 import { logSystemEvent } from '@/lib/system-events'
+import { requireAuth } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+
   try {
     const body = await request.json()
     const { jobId, email } = body

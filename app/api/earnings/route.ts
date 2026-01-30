@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const range = searchParams.get("range") || "week"
 
@@ -21,9 +26,9 @@ export async function GET(request: NextRequest) {
   const startIso = start.toISOString()
 
   const [tipsRes, upsellsRes, teamsRes] = await Promise.all([
-    client.from("tips").select("id,amount,team_id,cleaner_id,created_at,job_id").gte("created_at", startIso),
-    client.from("upsells").select("id,value,upsell_type,team_id,cleaner_id,created_at,job_id").gte("created_at", startIso),
-    client.from("teams").select("id,name").eq("active", true),
+    client.from("tips").select("id,amount,team_id,cleaner_id,created_at,job_id").eq("user_id", user.id).gte("created_at", startIso),
+    client.from("upsells").select("id,value,upsell_type,team_id,cleaner_id,created_at,job_id").eq("user_id", user.id).gte("created_at", startIso),
+    client.from("teams").select("id,name").eq("user_id", user.id).eq("active", true),
   ])
 
   if (tipsRes.error) return NextResponse.json({ success: false, error: tipsRes.error.message }, { status: 500 })

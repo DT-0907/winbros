@@ -1,6 +1,7 @@
 "use client"
 
 import React from "react"
+import { useSearchParams } from "next/navigation"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -92,6 +93,11 @@ type SettingsPayload = {
 }
 
 export default function SettingsPage() {
+  const searchParams = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const validTabs = ['integrations', 'notifications', 'business', 'security']
+  const initialTab = tabParam && validTabs.includes(tabParam) ? tabParam : 'integrations'
+
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -199,7 +205,7 @@ export default function SettingsPage() {
         {error && <p className="text-sm text-destructive mt-2">{error}</p>}
       </div>
 
-      <Tabs defaultValue="integrations" className="space-y-6">
+      <Tabs defaultValue={initialTab} className="space-y-6">
         <TabsList className="bg-muted/50">
           <TabsTrigger value="integrations" className="gap-2">
             <Zap className="w-4 h-4" />

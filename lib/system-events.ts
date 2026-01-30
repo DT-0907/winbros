@@ -12,6 +12,7 @@ export type SystemEventSource =
   | 'ghl'
   | 'housecall_pro'
   | 'job_updates'
+  | 'lead_followup'
 
 export type SystemEventType =
   | 'CALL_COMPLETED'
@@ -76,6 +77,15 @@ export type SystemEventType =
   | 'GHL_CUSTOMER_RESPONSE'
   // Housecall Pro Events
   | 'HCP_LEAD_RECEIVED'
+  // Lead Follow-up Automation Events
+  | 'LEAD_FOLLOWUP_STAGE_1'
+  | 'LEAD_FOLLOWUP_STAGE_2'
+  | 'LEAD_FOLLOWUP_STAGE_3'
+  | 'LEAD_FOLLOWUP_STAGE_4'
+  | 'LEAD_FOLLOWUP_STAGE_5'
+  | 'LEAD_FOLLOWUP_ERROR'
+  | 'MONTHLY_FOLLOWUP_SENT'
+  | 'CUSTOMER_NOTIFIED'
 
 export interface SystemEventInput {
   event_type: SystemEventType

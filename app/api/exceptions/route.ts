@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseServiceClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 type ExceptionType = "no-confirm" | "high-value" | "routing" | "scheduling" | "system"
 type Priority = "high" | "medium" | "low"
@@ -73,15 +74,20 @@ function deriveException(row: any): ExceptionItem {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const url = request.nextUrl
   const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "25")))
 
   const client = getSupabaseServiceClient()
 
-  // “Exceptions” are derived from recent system_events that indicate problems / attention needed.
+  // "Exceptions" are derived from recent system_events that indicate problems / attention needed.
   const { data, error } = await client
     .from("system_events")
     .select("id,event_type,source,message,metadata,created_at")
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(limit)
 

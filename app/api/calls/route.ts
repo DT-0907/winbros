@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { Call, PaginatedResponse } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 function mapOutcome(value: unknown): Call["outcome"] | undefined {
   const raw = typeof value === "string" ? value.toLowerCase() : ""
@@ -22,6 +23,10 @@ function mapDirection(value: unknown): Call["call_type"] {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const page = parseInt(searchParams.get("page") || "1")
   const per_page = parseInt(searchParams.get("per_page") || "50")
@@ -35,6 +40,7 @@ export async function GET(request: NextRequest) {
   let query = client
     .from("calls")
     .select("*, customers (*)", { count: "exact" })
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
 
   if (phone) query = query.eq("phone_number", phone)

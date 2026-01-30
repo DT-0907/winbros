@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { RainDayReschedule, ApiResponse, Job } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth, AuthUser } from "@/lib/auth"
 
 function mapDbStatusToApi(status: string | null | undefined): Job["status"] {
   switch ((status || "").toLowerCase()) {
@@ -45,11 +46,12 @@ function toTimeHHMM(value: unknown): string {
   return "09:00"
 }
 
-async function getAffectedJobs(date: string): Promise<Job[]> {
+async function getAffectedJobs(date: string, userId: number): Promise<Job[]> {
   const client = getSupabaseClient()
   const { data, error } = await client
     .from("jobs")
     .select("*, customers (*), cleaner_assignments (*, cleaners (*))")
+    .eq("user_id", userId)
     .eq("date", date)
     .neq("status", "cancelled")
     .order("scheduled_at", { ascending: true })
@@ -93,6 +95,10 @@ async function getAffectedJobs(date: string): Promise<Job[]> {
 }
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   try {
     const body = await request.json()
     const { affected_date, target_date, initiated_by } = body
@@ -105,7 +111,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get all affected jobs
-    const affectedJobs = await getAffectedJobs(affected_date)
+    const affectedJobs = await getAffectedJobs(affected_date, user.id)
     const successfullyRescheduled: string[] = []
     const failedJobs: string[] = []
 
@@ -154,6 +160,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const date = searchParams.get("date")
 
@@ -165,7 +175,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Get preview of jobs that would be affected
-  const affectedJobs = await getAffectedJobs(date)
+  const affectedJobs = await getAffectedJobs(date, user.id)
   const totalRevenue = affectedJobs.reduce((sum, job) => sum + job.estimated_value, 0)
 
   return NextResponse.json({

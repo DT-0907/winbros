@@ -9,7 +9,8 @@ export async function POST(request: NextRequest) {
   const timestamp = request.headers.get("x-openphone-timestamp")
 
   const rawBody = await request.text()
-  const ok = await validateOpenPhoneWebhook(rawBody, signature, timestamp)
+  // Pass null for tenant - uses global webhook secret from env
+  const ok = await validateOpenPhoneWebhook(null, rawBody, signature, timestamp)
   if (!ok) {
     return NextResponse.json({ success: false, error: "Invalid OpenPhone signature" }, { status: 401 })
   }

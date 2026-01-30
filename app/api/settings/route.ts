@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseServiceClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 type NotificationPrefs = {
   newLeads: boolean
@@ -90,13 +91,18 @@ function computeWebhookBase(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth(req)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const client = getSupabaseServiceClient()
   const base = computeWebhookBase(req)
+  const settingsId = `user_${user.id}`
 
   const { data, error } = await client
     .from("app_settings")
     .select("id, notifications, business_rules, updated_at")
-    .eq("id", "global")
+    .eq("id", settingsId)
     .single()
 
   // If table exists but row doesn't, return defaults.
@@ -127,8 +133,13 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireAuth(req)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const client = getSupabaseServiceClient()
   const body = await req.json().catch(() => ({}))
+  const settingsId = `user_${user.id}`
 
   const notificationsPatch = body?.notifications && typeof body.notifications === "object" ? body.notifications : null
   const businessRulesPatch = body?.businessRules && typeof body.businessRules === "object" ? body.businessRules : null
@@ -141,7 +152,7 @@ export async function POST(req: NextRequest) {
   const current = await client
     .from("app_settings")
     .select("notifications,business_rules")
-    .eq("id", "global")
+    .eq("id", settingsId)
     .single()
 
   const currentNotifications =
@@ -161,7 +172,8 @@ export async function POST(req: NextRequest) {
     .from("app_settings")
     .upsert(
       {
-        id: "global",
+        id: settingsId,
+        user_id: user.id,
         notifications: nextNotifications,
         business_rules: nextRules,
         updated_at: new Date().toISOString(),

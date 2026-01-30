@@ -13,8 +13,12 @@ import {
 } from '@/lib/supabase'
 import { syncHubSpotContact, syncHubSpotDeal } from '@/lib/hubspot'
 import { getClientConfig } from '@/lib/client-config'
+import { requireAuth } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+
   try {
     const config = getClientConfig()
     if (!config.features.hubspot) {

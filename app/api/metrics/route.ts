@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import type { DailyMetrics, ApiResponse } from "@/lib/types"
 import { getSupabaseClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
@@ -87,6 +88,10 @@ function computeDayMetrics(params: {
 }
 
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const searchParams = request.nextUrl.searchParams
   const range = searchParams.get("range") || "today"
   const date = searchParams.get("date")
@@ -96,7 +101,7 @@ export async function GET(request: NextRequest) {
   const client = getSupabaseClient()
   const baseDate = date ? new Date(`${date}T00:00:00Z`) : new Date()
 
-  const cleanersRes = await client.from("cleaners").select("id").eq("active", true)
+  const cleanersRes = await client.from("cleaners").select("id").eq("user_id", user.id).eq("active", true)
   const activeCrews = cleanersRes.data ? cleanersRes.data.length : 0
 
   let startDate: string
@@ -116,6 +121,7 @@ export async function GET(request: NextRequest) {
   const jobsRes = await client
     .from("jobs")
     .select("date,status,price")
+    .eq("user_id", user.id)
     .gte("date", startDate)
     .lte("date", endDate)
     .neq("status", "cancelled")
@@ -123,12 +129,14 @@ export async function GET(request: NextRequest) {
   const leadsRes = await client
     .from("leads")
     .select("created_at,status")
+    .eq("user_id", user.id)
     .gte("created_at", startOfDayUTC(startDate))
     .lte("created_at", endOfDayUTC(endDate))
 
   const callsRes = await client
     .from("calls")
     .select("created_at,date,started_at")
+    .eq("user_id", user.id)
     .gte("created_at", startOfDayUTC(startDate))
     .lte("created_at", endOfDayUTC(endDate))
 

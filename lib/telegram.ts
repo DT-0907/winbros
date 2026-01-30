@@ -1,13 +1,41 @@
 /**
  * Telegram Bot Integration - Cleaner notifications
+ * Multi-tenant version - supports both old (env var) and new (tenant) calling patterns
  */
 
-import { Cleaner, Job, Customer } from './supabase'
-import { getAddOnLabel, getOverridesFromNotes, getEstimateFromNotes } from './pricing-config'
-import type { AddOnKey } from './pricing-config'
-import { getClientConfig } from './client-config'
+import type { Tenant } from './tenant'
+import { getDefaultTenant } from './tenant'
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org/bot'
+
+// Simplified types that don't depend on supabase.ts to avoid circular imports
+interface CleanerInfo {
+  telegram_id?: string | null
+  name: string
+  phone?: string | null
+}
+
+interface JobInfo {
+  id?: string | number
+  date?: string | null
+  scheduled_at?: string | null
+  address?: string | null
+  service_type?: string | null
+  notes?: string | null
+  bedrooms?: number | null
+  bathrooms?: number | null
+  square_footage?: number | null
+  hours?: number | null
+}
+
+interface CustomerInfo {
+  first_name?: string | null
+  last_name?: string | null
+  address?: string | null
+  bedrooms?: number | null
+  bathrooms?: number | null
+  square_footage?: number | null
+}
 
 interface SendMessageResult {
   success: boolean
@@ -25,18 +53,73 @@ interface InlineKeyboardMarkup {
 }
 
 /**
+ * Get bot token from tenant, string, or environment variable
+ */
+async function getBotToken(tenantOrToken?: Tenant | string | null): Promise<string | null> {
+  if (typeof tenantOrToken === 'string') {
+    return tenantOrToken
+  }
+  if (tenantOrToken && typeof tenantOrToken === 'object' && 'telegram_bot_token' in tenantOrToken) {
+    return tenantOrToken.telegram_bot_token
+  }
+  // Fallback to env var or default tenant
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    return process.env.TELEGRAM_BOT_TOKEN
+  }
+  const tenant = await getDefaultTenant()
+  return tenant?.telegram_bot_token || null
+}
+
+/**
  * Send a message via Telegram bot
+ * Backwards compatible - can be called with (chatId, text) or (tenant, chatId, text)
  */
 export async function sendTelegramMessage(
-  chatId: string,
-  text: string,
-  parseMode: 'HTML' | 'Markdown' = 'HTML',
+  tenantOrChatId: Tenant | string,
+  chatIdOrText: string,
+  textOrParseMode?: string | 'HTML' | 'Markdown',
+  parseModeOrMarkup?: 'HTML' | 'Markdown' | InlineKeyboardMarkup,
   replyMarkup?: InlineKeyboardMarkup
 ): Promise<SendMessageResult> {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
+  let botToken: string | null
+  let chatId: string
+  let text: string
+  let parseMode: 'HTML' | 'Markdown' = 'HTML'
+  let markup: InlineKeyboardMarkup | undefined
+
+  // Detect calling pattern
+  if (typeof tenantOrChatId === 'object' && 'telegram_bot_token' in tenantOrChatId) {
+    // New pattern: sendTelegramMessage(tenant, chatId, text, parseMode?, replyMarkup?)
+    botToken = tenantOrChatId.telegram_bot_token
+    chatId = chatIdOrText
+    text = textOrParseMode || ''
+    parseMode = (parseModeOrMarkup as 'HTML' | 'Markdown') || 'HTML'
+    markup = replyMarkup
+  } else {
+    // Old pattern: sendTelegramMessage(chatId, text, parseMode?, replyMarkup?)
+    // Or: sendTelegramMessage(botToken, chatId, text, parseMode?, replyMarkup?)
+    const firstArg = tenantOrChatId as string
+
+    // Check if first arg looks like a bot token (contains ':')
+    if (firstArg.includes(':')) {
+      // Pattern: sendTelegramMessage(botToken, chatId, text, parseMode?, replyMarkup?)
+      botToken = firstArg
+      chatId = chatIdOrText
+      text = textOrParseMode || ''
+      parseMode = (parseModeOrMarkup as 'HTML' | 'Markdown') || 'HTML'
+      markup = replyMarkup
+    } else {
+      // Pattern: sendTelegramMessage(chatId, text, parseMode?, replyMarkup?)
+      botToken = await getBotToken(null)
+      chatId = firstArg
+      text = chatIdOrText
+      parseMode = (textOrParseMode as 'HTML' | 'Markdown') || 'HTML'
+      markup = parseModeOrMarkup as InlineKeyboardMarkup | undefined
+    }
+  }
 
   if (!botToken) {
-    console.error('TELEGRAM_BOT_TOKEN not configured')
+    console.error('Telegram bot token not configured')
     return { success: false, error: 'Telegram bot token not configured' }
   }
 
@@ -51,8 +134,8 @@ export async function sendTelegramMessage(
       parse_mode: parseMode,
     }
 
-    if (replyMarkup) {
-      payload.reply_markup = replyMarkup
+    if (markup) {
+      payload.reply_markup = markup
     }
 
     const response = await fetch(`${TELEGRAM_API_BASE}${botToken}/sendMessage`, {
@@ -85,15 +168,31 @@ export async function sendTelegramMessage(
 
 /**
  * Answer a callback query (acknowledge button press)
+ * Backwards compatible
  */
 export async function answerCallbackQuery(
-  callbackQueryId: string,
-  text?: string
+  callbackQueryIdOrTenant: string | Tenant,
+  textOrCallbackQueryId?: string,
+  textIfTenant?: string
 ): Promise<boolean> {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
+  let botToken: string | null
+  let callbackQueryId: string
+  let text: string | undefined
+
+  if (typeof callbackQueryIdOrTenant === 'object' && 'telegram_bot_token' in callbackQueryIdOrTenant) {
+    // New pattern: answerCallbackQuery(tenant, callbackQueryId, text?)
+    botToken = callbackQueryIdOrTenant.telegram_bot_token
+    callbackQueryId = textOrCallbackQueryId || ''
+    text = textIfTenant
+  } else {
+    // Old pattern: answerCallbackQuery(callbackQueryId, text?)
+    botToken = await getBotToken(null)
+    callbackQueryId = callbackQueryIdOrTenant as string
+    text = textOrCallbackQueryId
+  }
 
   if (!botToken) {
-    console.error('TELEGRAM_BOT_TOKEN not configured')
+    console.error('Telegram bot token not configured')
     return false
   }
 
@@ -119,12 +218,26 @@ export async function answerCallbackQuery(
 
 /**
  * Edit a message to remove inline keyboard after response
+ * Backwards compatible
  */
 export async function editMessageReplyMarkup(
-  chatId: string,
-  messageId: number
+  chatIdOrTenant: string | Tenant,
+  chatIdOrMessageId: string | number,
+  messageIdIfTenant?: number
 ): Promise<boolean> {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
+  let botToken: string | null
+  let chatId: string
+  let messageId: number
+
+  if (typeof chatIdOrTenant === 'object' && 'telegram_bot_token' in chatIdOrTenant) {
+    botToken = chatIdOrTenant.telegram_bot_token
+    chatId = chatIdOrMessageId as string
+    messageId = messageIdIfTenant!
+  } else {
+    botToken = await getBotToken(null)
+    chatId = chatIdOrTenant as string
+    messageId = chatIdOrMessageId as number
+  }
 
   if (!botToken) return false
 
@@ -152,13 +265,41 @@ export async function editMessageReplyMarkup(
 /**
  * Notify a cleaner about a new job assignment request
  * Sends message with inline keyboard for accept/decline
+ * Backwards compatible - tenant is optional
  */
 export async function notifyCleanerAssignment(
-  cleaner: Cleaner,
-  job: Job,
-  customer?: Partial<Customer>,
-  assignmentId?: string
+  cleanerOrTenant: CleanerInfo | Tenant,
+  jobOrCleaner: JobInfo | CleanerInfo,
+  customerOrJob?: CustomerInfo | JobInfo | null,
+  assignmentIdOrCustomer?: string | CustomerInfo | null,
+  maybeAssignmentId?: string
 ): Promise<SendMessageResult> {
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+  let customer: CustomerInfo | null | undefined
+  let assignmentId: string | undefined
+
+  // Detect calling pattern
+  if ('telegram_bot_token' in cleanerOrTenant) {
+    // New pattern: notifyCleanerAssignment(tenant, cleaner, job, customer?, assignmentId?)
+    tenant = cleanerOrTenant as Tenant
+    cleaner = jobOrCleaner as CleanerInfo
+    job = customerOrJob as JobInfo
+    customer = assignmentIdOrCustomer as CustomerInfo | null | undefined
+    assignmentId = maybeAssignmentId
+  } else {
+    // Old pattern: notifyCleanerAssignment(cleaner, job, customer?, assignmentId?)
+    tenant = await getDefaultTenant()
+    cleaner = cleanerOrTenant as CleanerInfo
+    job = jobOrCleaner as JobInfo
+    customer = customerOrJob as CustomerInfo | null | undefined
+    assignmentId = assignmentIdOrCustomer as string | undefined
+  }
+
+  if (!tenant) {
+    return { success: false, error: 'No tenant configured' }
+  }
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -172,25 +313,16 @@ export async function notifyCleanerAssignment(
     : 'TBD'
 
   const timeStr = formatCleanerTime(job.scheduled_at)
-  const overrides = getOverridesFromNotes(job.notes)
-  const bedrooms = overrides.bedrooms ?? customer?.bedrooms ?? job.bedrooms ?? 'N/A'
-  const bathrooms = overrides.bathrooms ?? customer?.bathrooms ?? job.bathrooms ?? 'N/A'
+  const bedrooms = customer?.bedrooms ?? job.bedrooms ?? 'N/A'
+  const bathrooms = customer?.bathrooms ?? job.bathrooms ?? 'N/A'
   const squareFootage = customer?.square_footage ?? job.square_footage ?? 'N/A'
   const duration = job.hours ? `${job.hours} hours` : 'TBD'
 
-  // Calculate cleaner pay ($25 per hour × total hours)
-  const estimate = getEstimateFromNotes(job.notes)
-  const config = getClientConfig()
-  let cleanerPay = 'TBD'
-  if (estimate.cleanerPay) {
-    cleanerPay = estimate.cleanerPay.toFixed(2)
-  } else if (estimate.totalHours) {
-    cleanerPay = (estimate.totalHours * config.cleanerHourlyRate).toFixed(2)
-  }
-
   const safeNotes = formatCleanerNotes(job.notes)
+  const businessName = tenant.business_name_short || tenant.name
+
   const message = `
-<b>New Job Available!</b>
+<b>New Job Available - ${businessName}!</b>
 
 Date: ${dateStr}, ${timeStr}
 Bedrooms: ${bedrooms}
@@ -198,7 +330,6 @@ Bathrooms: ${bathrooms}
 Square Footage: ${squareFootage}
 Duration: ${duration}
 Notes: ${safeNotes || 'None'}
-Pay: $${cleanerPay}
 
 Address: ${job.address || customer?.address || 'See details'}
 Customer: ${customer?.first_name || 'Customer'}
@@ -219,16 +350,17 @@ Reply with 1 (Available) or 2 (Not Available)
     ],
   }
 
-  return await sendTelegramMessage(cleaner.telegram_id, message, 'HTML', inlineKeyboard)
+  return await sendTelegramMessage(tenant, cleaner.telegram_id, message, 'HTML', inlineKeyboard)
 }
 
 /**
  * Notify cleaner they've been awarded the job
  */
 export async function notifyCleanerAwarded(
-  cleaner: Cleaner,
-  job: Job,
-  customer?: Partial<Customer>
+  tenant: Tenant,
+  cleaner: CleanerInfo,
+  job: JobInfo,
+  customer?: CustomerInfo | null
 ): Promise<SendMessageResult> {
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
@@ -243,21 +375,10 @@ export async function notifyCleanerAwarded(
     : 'TBD'
 
   const timeStr = formatCleanerTime(job.scheduled_at)
-  const overrides = getOverridesFromNotes(job.notes)
-  const bedrooms = overrides.bedrooms ?? customer?.bedrooms ?? job.bedrooms ?? 'N/A'
-  const bathrooms = overrides.bathrooms ?? customer?.bathrooms ?? job.bathrooms ?? 'N/A'
+  const bedrooms = customer?.bedrooms ?? job.bedrooms ?? 'N/A'
+  const bathrooms = customer?.bathrooms ?? job.bathrooms ?? 'N/A'
   const squareFootage = customer?.square_footage ?? job.square_footage ?? 'N/A'
   const duration = job.hours ? `${job.hours} hours` : 'TBD'
-
-  // Calculate cleaner pay ($25 per hour × total hours)
-  const estimate = getEstimateFromNotes(job.notes)
-  const config = getClientConfig()
-  let cleanerPay = 'TBD'
-  if (estimate.cleanerPay) {
-    cleanerPay = estimate.cleanerPay.toFixed(2)
-  } else if (estimate.totalHours) {
-    cleanerPay = (estimate.totalHours * config.cleanerHourlyRate).toFixed(2)
-  }
 
   const serviceType = job.service_type ? humanizeText(job.service_type) : 'Standard cleaning'
 
@@ -269,7 +390,6 @@ Bedrooms: ${bedrooms}
 Bathrooms: ${bathrooms}
 Square Footage: ${squareFootage}
 Duration: ${duration}
-Pay: $${cleanerPay}
 
 Address: ${job.address || customer?.address || 'See details'}
 Customer: ${customer?.first_name || 'Customer'}
@@ -278,15 +398,16 @@ Service: ${serviceType}
 This job is now confirmed on your schedule. Please arrive on time!
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
 }
 
 /**
  * Notify cleaner they were not selected for the job
  */
 export async function notifyCleanerNotSelected(
-  cleaner: Cleaner,
-  job: Job
+  tenant: Tenant,
+  cleaner: CleanerInfo,
+  job: JobInfo
 ): Promise<SendMessageResult> {
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
@@ -306,16 +427,37 @@ export async function notifyCleanerNotSelected(
 The job on ${dateStr} has been assigned to another cleaner. Thank you for your availability!
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
 }
 
 /**
  * Send urgent follow-up to unresponsive cleaners
+ * Backwards compatible - can be called with:
+ * - (cleaner, job) - old pattern
+ * - (tenant, cleaner, job) - new pattern
  */
 export async function sendUrgentFollowUp(
-  cleaner: Cleaner,
-  job: Job
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJob: CleanerInfo | JobInfo,
+  jobOrUndefined?: JobInfo
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, job)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJob as CleanerInfo
+    job = jobOrUndefined as JobInfo
+  } else {
+    // Old calling pattern: (cleaner, job)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    job = cleanerOrJob as JobInfo
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -336,16 +478,42 @@ We still need a response for the job on <b>${dateStr}</b>.
 Please reply ASAP - the customer is waiting!
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  // Call sendTelegramMessage - use old pattern if no tenant
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 /**
  * Send daily schedule to a cleaner
+ * Backwards compatible - can be called with:
+ * - (cleaner, jobs) - old pattern
+ * - (tenant, cleaner, jobs) - new pattern
  */
 export async function sendDailySchedule(
-  cleaner: Cleaner,
-  jobs: Array<Job & { customer?: Partial<Customer> }>
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJobs: CleanerInfo | Array<JobInfo & { customer?: CustomerInfo | null }>,
+  jobsOrUndefined?: Array<JobInfo & { customer?: CustomerInfo | null }>
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let jobs: Array<JobInfo & { customer?: CustomerInfo | null }>
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, jobs)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJobs as CleanerInfo
+    jobs = jobsOrUndefined || []
+  } else {
+    // Old calling pattern: (cleaner, jobs)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    jobs = cleanerOrJobs as Array<JobInfo & { customer?: CustomerInfo | null }>
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -357,7 +525,11 @@ export async function sendDailySchedule(
 You have no jobs scheduled for today. Enjoy your day off!
 `.trim()
 
-    return await sendTelegramMessage(cleaner.telegram_id, message)
+    if (tenant) {
+      return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+    } else {
+      return await sendTelegramMessage(cleaner.telegram_id, message)
+    }
   }
 
   // Sort jobs by scheduled time
@@ -372,9 +544,8 @@ You have no jobs scheduled for today. Enjoy your day off!
     const address = job.address || job.customer?.address || 'See details'
     const customerName = job.customer?.first_name || 'Customer'
     const safeNotes = formatCleanerNotes(job.notes)
-    const overrides = getOverridesFromNotes(job.notes)
-    const bedrooms = overrides.bedrooms ?? job.customer?.bedrooms ?? job.bedrooms ?? '?'
-    const bathrooms = overrides.bathrooms ?? job.customer?.bathrooms ?? job.bathrooms ?? '?'
+    const bedrooms = job.customer?.bedrooms ?? job.bedrooms ?? '?'
+    const bathrooms = job.customer?.bathrooms ?? job.bathrooms ?? '?'
     const serviceType = job.service_type ? humanizeText(job.service_type) : 'Standard cleaning'
 
     return `
@@ -397,19 +568,49 @@ ${jobsList}
 Have a great day!
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 /**
  * Send a job reminder notification to a cleaner
- * Used for 1-hour before and job start reminders
+ * Backwards compatible - can be called with:
+ * - (cleaner, job, customer, reminderType) - old pattern
+ * - (tenant, cleaner, job, customer, reminderType) - new pattern
  */
 export async function sendJobReminder(
-  cleaner: Cleaner,
-  job: Job,
-  customer: Customer | undefined,
-  reminderType: 'one_hour_before' | 'job_start'
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJob: CleanerInfo | JobInfo,
+  jobOrCustomer: JobInfo | CustomerInfo | undefined,
+  customerOrType: CustomerInfo | undefined | 'one_hour_before' | 'job_start',
+  reminderTypeOrUndefined?: 'one_hour_before' | 'job_start'
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+  let customer: CustomerInfo | undefined
+  let reminderType: 'one_hour_before' | 'job_start'
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, job, customer, reminderType)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJob as CleanerInfo
+    job = jobOrCustomer as JobInfo
+    customer = customerOrType as CustomerInfo | undefined
+    reminderType = reminderTypeOrUndefined || 'job_start'
+  } else {
+    // Old calling pattern: (cleaner, job, customer, reminderType)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    job = cleanerOrJob as JobInfo
+    customer = jobOrCustomer as CustomerInfo | undefined
+    reminderType = (customerOrType as 'one_hour_before' | 'job_start') || 'job_start'
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -431,36 +632,61 @@ export async function sendJobReminder(
   let message: string
   if (reminderType === 'one_hour_before') {
     message = `
-<b>⏰ Reminder: Job starting in 1 hour</b>
+<b>Reminder: Job starting in 1 hour</b>
 
-📅 ${dateStr} at ${timeStr}
-📍 ${address}
-👤 ${customerName}
+${dateStr} at ${timeStr}
+${address}
+${customerName}
 
 Get ready to head out soon!
 `.trim()
   } else {
     message = `
-<b>🚀 Job Starting Now!</b>
+<b>Job Starting Now!</b>
 
-📅 ${dateStr} at ${timeStr}
-📍 ${address}
-👤 ${customerName}
+${dateStr} at ${timeStr}
+${address}
+${customerName}
 
 Time to start the job. Good luck!
 `.trim()
   }
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 /**
  * Notify cleaner of a job cancellation
+ * Backwards compatible - can be called with:
+ * - (cleaner, job) - old pattern
+ * - (tenant, cleaner, job) - new pattern
  */
 export async function notifyJobCancellation(
-  cleaner: Cleaner,
-  job: Job
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJob: CleanerInfo | JobInfo,
+  jobOrUndefined?: JobInfo
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, job)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJob as CleanerInfo
+    job = jobOrUndefined as JobInfo
+  } else {
+    // Old calling pattern: (cleaner, job)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    job = cleanerOrJob as JobInfo
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -485,18 +711,49 @@ The following job has been cancelled:
 Your schedule has been updated.
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 /**
  * Notify cleaner of a schedule change
+ * Backwards compatible - can be called with:
+ * - (cleaner, job, oldDate, oldTime) - old pattern
+ * - (tenant, cleaner, job, oldDate, oldTime) - new pattern
  */
 export async function notifyScheduleChange(
-  cleaner: Cleaner,
-  job: Job,
-  oldDate: string,
-  oldTime: string
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJob: CleanerInfo | JobInfo,
+  jobOrOldDate: JobInfo | string,
+  oldDateOrOldTime?: string,
+  oldTimeOrUndefined?: string
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+  let oldDate: string
+  let oldTime: string
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, job, oldDate, oldTime)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJob as CleanerInfo
+    job = jobOrOldDate as JobInfo
+    oldDate = oldDateOrOldTime || ''
+    oldTime = oldTimeOrUndefined || ''
+  } else {
+    // Old calling pattern: (cleaner, job, oldDate, oldTime)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    job = cleanerOrJob as JobInfo
+    oldDate = (jobOrOldDate as string) || ''
+    oldTime = oldDateOrOldTime || ''
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -520,7 +777,11 @@ A job has been rescheduled:
 Please update your calendar!
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 export type JobChange = {
@@ -531,12 +792,37 @@ export type JobChange = {
 
 /**
  * Notify cleaner of job details changes
+ * Backwards compatible - can be called with:
+ * - (cleaner, job, changes) - old pattern
+ * - (tenant, cleaner, job, changes) - new pattern
  */
 export async function notifyJobDetailsChange(
-  cleaner: Cleaner,
-  job: Job,
-  changes: JobChange[]
+  tenantOrCleaner: Tenant | CleanerInfo,
+  cleanerOrJob: CleanerInfo | JobInfo,
+  jobOrChanges: JobInfo | JobChange[],
+  changesOrUndefined?: JobChange[]
 ): Promise<SendMessageResult> {
+  // Detect if called with tenant or without (backwards compat)
+  // A Tenant has 'slug', a CleanerInfo doesn't
+  let tenant: Tenant | null
+  let cleaner: CleanerInfo
+  let job: JobInfo
+  let changes: JobChange[]
+
+  if ('slug' in tenantOrCleaner) {
+    // New calling pattern: (tenant, cleaner, job, changes)
+    tenant = tenantOrCleaner as Tenant
+    cleaner = cleanerOrJob as CleanerInfo
+    job = jobOrChanges as JobInfo
+    changes = changesOrUndefined || []
+  } else {
+    // Old calling pattern: (cleaner, job, changes)
+    tenant = null
+    cleaner = tenantOrCleaner as CleanerInfo
+    job = cleanerOrJob as JobInfo
+    changes = (jobOrChanges as JobChange[]) || []
+  }
+
   if (!cleaner.telegram_id) {
     return { success: false, error: 'Cleaner has no Telegram ID configured' }
   }
@@ -572,24 +858,24 @@ export async function notifyJobDetailsChange(
             day: 'numeric',
           })
         : 'TBD'
-      return `• ${capitalizedField}: ${oldDateStr} → ${newDateStr}`
+      return `- ${capitalizedField}: ${oldDateStr} -> ${newDateStr}`
     }
 
     if (change.field === 'scheduled_at') {
       const oldTime = formatCleanerTime(String(change.oldValue || ''))
       const newTime = formatCleanerTime(String(change.newValue || ''))
-      return `• Time: ${oldTime} → ${newTime}`
+      return `- Time: ${oldTime} -> ${newTime}`
     }
 
     if (change.field === 'address') {
-      return `• ${capitalizedField} changed to: ${change.newValue || 'N/A'}`
+      return `- ${capitalizedField} changed to: ${change.newValue || 'N/A'}`
     }
 
-    return `• ${capitalizedField}: ${change.oldValue || 'N/A'} → ${change.newValue || 'N/A'}`
+    return `- ${capitalizedField}: ${change.oldValue || 'N/A'} -> ${change.newValue || 'N/A'}`
   })
 
   const message = `
-🔔 <b>Job Update</b>
+<b>Job Update</b>
 
 Your job on ${jobDateStr} has been updated:
 
@@ -598,15 +884,22 @@ ${changeLines.join('\n')}
 Please review the updated details.
 `.trim()
 
-  return await sendTelegramMessage(cleaner.telegram_id, message)
+  // Call sendTelegramMessage - use old pattern if no tenant
+  if (tenant) {
+    return await sendTelegramMessage(tenant, cleaner.telegram_id, message)
+  } else {
+    // Backwards compatible: call with just chatId, text
+    return await sendTelegramMessage(cleaner.telegram_id, message)
+  }
 }
 
 /**
  * Request cleaner confirmation for a reschedule
  */
 export async function requestRescheduleConfirmation(
-  cleaner: Cleaner,
-  job: Job,
+  tenant: Tenant,
+  cleaner: CleanerInfo,
+  job: JobInfo,
   oldDate: string,
   oldTime: string,
   assignmentId?: string
@@ -645,64 +938,36 @@ Can you confirm this new time?
     ],
   }
 
-  return await sendTelegramMessage(cleaner.telegram_id, message, 'HTML', inlineKeyboard)
+  return await sendTelegramMessage(tenant, cleaner.telegram_id, message, 'HTML', inlineKeyboard)
 }
 
-function redactContactInfo(value: string): string {
-  const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
-  const phoneRegex = /\+?\d[\d\s().-]{6,}\d/g
-  const urlRegex = /https?:\/\/\S+/gi
-  const lines = value.split('\n')
-  const filtered = lines.filter((line) => {
-    const lower = line.toLowerCase()
-    if (lower.includes('invoice_url') || lower.includes('invoice url')) {
-      return false
-    }
-    return !urlRegex.test(line)
-  })
-  const joined = filtered.join('\n')
-  return joined
-    .replace(emailRegex, '[redacted]')
-    .replace(phoneRegex, '[redacted]')
-}
+// Helper functions
 
 function formatCleanerNotes(notes?: string | null): string {
   if (!notes) return ''
 
-  const redacted = redactContactInfo(notes)
-  const lines = redacted
+  const lines = notes
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
 
   const cleaned: string[] = []
-  const addOns = new Set<string>()
 
   for (const line of lines) {
     const lower = line.toLowerCase()
+    // Skip internal/payment related notes
     if (
       lower.startsWith('hours:') ||
       lower.startsWith('pay:') ||
       lower.startsWith('payment:') ||
-      lower.startsWith('override:')
+      lower.startsWith('override:') ||
+      lower.includes('invoice_url') ||
+      lower.includes('@')  // Skip emails
     ) {
       continue
     }
 
-    if (lower.startsWith('add-on:') || lower.startsWith('add on:') || lower.startsWith('addon:')) {
-      const rawKey = line.split(':')[1]?.trim()
-      if (rawKey) {
-        const normalizedKey = rawKey.toLowerCase().replace(/\s+/g, '_')
-        addOns.add(humanizeText(getAddOnLabel(normalizedKey as AddOnKey)))
-      }
-      continue
-    }
-
     cleaned.push(humanizeText(line))
-  }
-
-  if (addOns.size > 0) {
-    cleaned.push(`Add-ons: ${Array.from(addOns).join(', ')}`)
   }
 
   return cleaned.join(' ')

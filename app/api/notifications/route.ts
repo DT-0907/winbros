@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseServiceClient } from "@/lib/supabase"
+import { requireAuth } from "@/lib/auth"
 
 type NotificationItem = {
   id: string
@@ -38,12 +39,17 @@ function titleFrom(row: any): { title: string; subtitle?: string } {
 }
 
 export async function GET(req: NextRequest) {
+  const authResult = await requireAuth(req)
+  if (authResult instanceof NextResponse) return authResult
+  const { user } = authResult
+
   const limit = Math.min(20, Math.max(1, parseInt(req.nextUrl.searchParams.get("limit") || "10")))
   const client = getSupabaseServiceClient()
 
   const { data, error } = await client
     .from("system_events")
     .select("id,event_type,source,message,created_at")
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(limit)
 
