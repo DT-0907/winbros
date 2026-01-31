@@ -15,6 +15,7 @@ import { sendSMS } from "@/lib/openphone"
 import { cleanerAssigned, noCleanersAvailable } from "@/lib/sms-templates"
 import { logSystemEvent } from "@/lib/system-events"
 import { getDefaultTenant } from "@/lib/tenant"
+import Anthropic from "@anthropic-ai/sdk"
 
 /**
  * Webhook handler for Telegram bot messages and callback queries
@@ -625,9 +626,13 @@ Send "join" or "I'm a new cleaner" to register.
       return NextResponse.json({ success: true, action: "job_confirmed", job_id: jobId })
     }
 
-    // Unknown message format
+    // Unknown message format - use AI to provide helpful response
     console.log(`[OSIRIS] Unrecognized message format: ${text}`)
-    return NextResponse.json({ success: true, action: "no_action" })
+
+    const aiResponse = await generateAIResponse(text, cleaner?.name || from.first_name, !!cleaner?.is_team_lead)
+    await sendTelegramMessage(chatId, aiResponse)
+
+    return NextResponse.json({ success: true, action: "ai_response" })
 
   } catch (error) {
     console.error("[OSIRIS] Telegram webhook error:", error)
@@ -993,4 +998,84 @@ async function handleBriefingCommand(
   await sendTelegramMessage(chatId, briefing)
 
   return NextResponse.json({ success: true, action: "briefing_sent" })
+}
+
+/**
+ * Generate AI response for unrecognized messages
+ * Uses Claude to understand intent and direct user to appropriate commands
+ */
+async function generateAIResponse(
+  userMessage: string,
+  userName: string,
+  isTeamLead: boolean
+): Promise<string> {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY
+
+  // Fallback if no API key
+  if (!anthropicKey) {
+    return getDefaultFallbackResponse(isTeamLead)
+  }
+
+  try {
+    const client = new Anthropic({ apiKey: anthropicKey })
+
+    const teamLeadCommands = isTeamLead
+      ? `
+- /team - View your team members
+- /leaderboard - See job completion rankings
+- /briefing - Get your daily briefing`
+      : ""
+
+    const systemPrompt = `You are a helpful assistant for a cleaning company's Telegram bot. Your job is to understand what the user is trying to do and direct them to the right command or action.
+
+Available commands and actions:
+- "join" or "I'm a new cleaner" - Register as a new cleaner
+- /start - See welcome message and all commands
+- /myid - Get your Telegram chat ID
+- "tip job [number] - $[amount]" - Report a tip (e.g., "tip job 123 - $20")
+- "upsell job [number] - [description]" - Report an upsell (e.g., "upsell job 123 - deep clean")
+- Accept/Decline buttons appear when you're offered a job${teamLeadCommands}
+
+The user's name is ${userName}.${isTeamLead ? " They are a team lead." : ""}
+
+Respond in a friendly, concise way (2-3 sentences max). Help them understand what command they should use. Use simple language. Don't use markdown formatting - use plain text only.`
+
+    const response = await client.messages.create({
+      model: "claude-3-5-haiku-20241022",
+      max_tokens: 200,
+      messages: [
+        {
+          role: "user",
+          content: userMessage,
+        },
+      ],
+      system: systemPrompt,
+    })
+
+    const textContent = response.content.find((block) => block.type === "text")
+    if (textContent?.type === "text" && textContent.text) {
+      return textContent.text.trim()
+    }
+
+    return getDefaultFallbackResponse(isTeamLead)
+  } catch (error) {
+    console.error("[OSIRIS] AI response error:", error)
+    return getDefaultFallbackResponse(isTeamLead)
+  }
+}
+
+/**
+ * Default fallback when AI is unavailable
+ */
+function getDefaultFallbackResponse(isTeamLead: boolean): string {
+  const teamLeadPart = isTeamLead
+    ? "\n\nTeam lead commands: /team, /leaderboard, /briefing"
+    : ""
+
+  return `I didn't quite understand that. Here's what I can help with:
+
+• New cleaner? Send "join" to register
+• Report a tip: "tip job 123 - $20"
+• Report an upsell: "upsell job 123 - deep clean"
+• Need help? Send /start${teamLeadPart}`
 }
