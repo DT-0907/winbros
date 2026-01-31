@@ -5,6 +5,8 @@ import { getSupabaseClient } from "@/lib/supabase"
 import { normalizePhoneNumber } from "@/lib/phone-utils"
 import { getApiKey } from "@/lib/user-api-keys"
 import { scheduleLeadFollowUp } from "@/lib/qstash"
+import { logSystemEvent } from "@/lib/system-events"
+import { getDefaultTenant } from "@/lib/tenant"
 
 /**
  * Webhook handler for Housecall Pro events
@@ -159,11 +161,41 @@ export async function POST(request: NextRequest) {
         console.log("[OSIRIS] Job completed, triggering post-job automations")
         {
           const jobId = (data as any)?.job?.id || (data as any)?.job_id || (data as any)?.id
-          if (jobId != null) {
-            await client.from("jobs").update({
-              status: "completed",
-              completed_at: new Date().toISOString()
-            }).eq("id", Number(jobId))
+          const hcpJobId = (data as any)?.job?.id || (data as any)?.id
+
+          // Try to find job by HCP job ID or our internal ID
+          let internalJobId = jobId
+          if (hcpJobId) {
+            const { data: existingJob } = await client
+              .from("jobs")
+              .select("id")
+              .eq("hcp_job_id", String(hcpJobId))
+              .maybeSingle()
+
+            if (existingJob) {
+              internalJobId = existingJob.id
+            }
+          }
+
+          if (internalJobId != null) {
+            const { data: updatedJob } = await client
+              .from("jobs")
+              .update({
+                status: "completed",
+                completed_at: new Date().toISOString()
+              })
+              .eq("id", Number(internalJobId))
+              .select("phone_number")
+              .single()
+
+            await logSystemEvent({
+              source: "housecall_pro",
+              event_type: "JOB_COMPLETED",
+              message: `Job ${internalJobId} marked completed via HCP`,
+              job_id: String(internalJobId),
+              phone_number: updatedJob?.phone_number || phone,
+              metadata: { hcp_job_id: hcpJobId },
+            })
           }
         }
         break

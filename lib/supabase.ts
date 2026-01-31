@@ -66,6 +66,9 @@ export interface Job {
   review_requested_at?: string
   monthly_followup_sent_at?: string
   completed_at?: string
+  // HousecallPro sync
+  hcp_job_id?: string
+  team_id?: number
 }
 
 export interface Cleaner {

@@ -88,6 +88,16 @@ export type SystemEventType =
   | 'MONTHLY_FOLLOWUP_SENT'
   | 'CUSTOMER_NOTIFIED'
   | 'LEAD_FOLLOWUP_EXECUTED'
+  // VAPI Events
+  | 'VAPI_CALL_RECEIVED'
+  | 'LEAD_CREATED_FROM_CALL'
+  | 'JOB_CREATED_FROM_CALL'
+  // SMS/OpenPhone Events
+  | 'SMS_INTENT_ANALYZED'
+  | 'LEAD_CREATED_FROM_SMS'
+  // Post-job automation
+  | 'POST_JOB_FOLLOWUP_SENT'
+  | 'MONTHLY_REENGAGEMENT_SENT'
 
 export interface SystemEventInput {
   event_type: SystemEventType

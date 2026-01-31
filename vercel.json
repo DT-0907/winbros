@@ -13,7 +13,7 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/cron/post-cleaning-followup",
+      "path": "/api/cron/post-job-followup",
       "schedule": "*/15 * * * *"
     },
     {
@@ -25,8 +25,8 @@
       "schedule": "0 16 * * *"
     },
     {
-      "path": "/api/cron/monthly-followup",
-      "schedule": "0 18 * * *"
+      "path": "/api/cron/monthly-reengagement",
+      "schedule": "0 17 * * *"
     }
   ]
 }

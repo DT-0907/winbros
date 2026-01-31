@@ -58,10 +58,51 @@ export function postCleaningReview(name: string, reviewLink: string): string {
 }
 
 /**
+ * Post-cleaning recurring offer
+ */
+export function postCleaningRecurring(name: string, discount: string): string {
+  return `${name}, want to keep your home sparkling? Book recurring cleanings and get ${discount} off each visit! Reply RECURRING for details.`
+}
+
+/**
+ * Post-cleaning tip prompt
+ */
+export function postCleaningTip(cleanerName: string, tipLink: string): string {
+  return `Happy with ${cleanerName}'s work? Leave a tip to show your appreciation: ${tipLink} - 100% goes to your cleaner!`
+}
+
+/**
+ * Combined post-job follow-up (review + recurring + tip)
+ * Sent 2 hours after job completion
+ */
+export function postJobFollowup(
+  customerName: string,
+  cleanerName: string,
+  reviewLink: string,
+  tipLink: string,
+  recurringDiscount: string
+): string {
+  return `Hi ${customerName}! Hope your home is sparkling!
+
+A quick review helps us grow: ${reviewLink}
+
+Want ${recurringDiscount} off future cleanings? Reply RECURRING
+
+Loved ${cleanerName}'s work? Tips appreciated: ${tipLink}`
+}
+
+/**
  * Monthly re-engagement offer with discount
  */
 export function monthlyFollowup(name: string, discount: string): string {
   return `Hey ${name}! It's been a while. Ready for another sparkle? Book this month and get ${discount} off. Reply BOOK to schedule!`
+}
+
+/**
+ * Monthly re-engagement with specific last service date
+ */
+export function monthlyReengagement(name: string, discount: string, daysSince: number): string {
+  return `Hi ${name}! It's been ${daysSince} days since your last cleaning. Ready for a refresh? Book now and get ${discount} off! Reply YES to schedule.`
 }
 
 /**
@@ -74,5 +115,9 @@ export const SMS_TEMPLATES = {
   cleanerAssigned,
   noCleanersAvailable,
   postCleaningReview,
+  postCleaningRecurring,
+  postCleaningTip,
+  postJobFollowup,
   monthlyFollowup,
+  monthlyReengagement,
 } as const

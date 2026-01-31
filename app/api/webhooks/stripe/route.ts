@@ -4,6 +4,8 @@ import { validateStripeWebhook } from '@/lib/stripe-client'
 import { getSupabaseClient, updateJob, getJobById, updateGHLLead } from '@/lib/supabase'
 import { triggerCleanerAssignment } from '@/lib/cleaner-assignment'
 import { logSystemEvent } from '@/lib/system-events'
+import { convertHCPLeadToJob } from '@/lib/housecall-pro-api'
+import { getDefaultTenant } from '@/lib/tenant'
 
 export async function POST(request: NextRequest) {
   try {
@@ -84,6 +86,7 @@ async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session) 
  * - Updates job payment status to 'deposit_paid'
  * - Sets confirmed_at timestamp
  * - Updates lead status to 'booked'
+ * - Converts HCP lead to job (two-way sync)
  * - Triggers cleaner assignment
  */
 async function handleDepositPayment(
@@ -105,7 +108,18 @@ async function handleDepositPayment(
   }
 
   // Update lead status if lead_id is provided
+  let hcpLeadId: string | undefined
   if (leadId) {
+    // Get lead to find HCP source_id
+    const client = getSupabaseClient()
+    const { data: lead } = await client
+      .from('leads')
+      .select('source_id')
+      .eq('id', leadId)
+      .single()
+
+    hcpLeadId = lead?.source_id
+
     const updatedLead = await updateGHLLead(leadId, {
       status: 'booked',
       converted_to_job_id: jobId,
@@ -113,6 +127,35 @@ async function handleDepositPayment(
 
     if (!updatedLead) {
       console.warn(`[Stripe Webhook] Failed to update lead ${leadId}`)
+    }
+  }
+
+  // Convert HCP lead to job (two-way sync)
+  let hcpJobId: string | undefined
+  if (hcpLeadId && !hcpLeadId.startsWith('vapi-') && !hcpLeadId.startsWith('sms-')) {
+    const tenant = await getDefaultTenant()
+    if (tenant) {
+      console.log(`[Stripe Webhook] Converting HCP lead ${hcpLeadId} to job...`)
+      const hcpResult = await convertHCPLeadToJob(tenant, hcpLeadId, {
+        scheduledDate: updatedJob.date || undefined,
+        scheduledTime: updatedJob.scheduled_at || undefined,
+        address: updatedJob.address || undefined,
+        serviceType: updatedJob.service_type || 'Cleaning Service',
+        price: updatedJob.price || undefined,
+        notes: updatedJob.notes || undefined,
+      })
+
+      if (hcpResult.success) {
+        hcpJobId = hcpResult.jobId
+        console.log(`[Stripe Webhook] HCP lead converted to job: ${hcpJobId}`)
+
+        // Store HCP job ID in our job record
+        await updateJob(jobId, {
+          hcp_job_id: hcpJobId,
+        })
+      } else {
+        console.warn(`[Stripe Webhook] Failed to convert HCP lead: ${hcpResult.error}`)
+      }
     }
   }
 
@@ -136,6 +179,8 @@ async function handleDepositPayment(
       amount_total: session.amount_total,
       currency: session.currency,
       lead_id: leadId,
+      hcp_lead_id: hcpLeadId,
+      hcp_job_id: hcpJobId,
       cleaner_assignment_triggered: assignmentResult.success,
     },
   })
