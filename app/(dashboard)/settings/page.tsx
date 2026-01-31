@@ -24,6 +24,9 @@ import {
   Bell,
   Shield,
   Zap,
+  DollarSign,
+  RefreshCw,
+  Save,
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
@@ -95,7 +98,7 @@ type SettingsPayload = {
 export default function SettingsPage() {
   const searchParams = useSearchParams()
   const tabParam = searchParams.get('tab')
-  const validTabs = ['integrations', 'notifications', 'business', 'security']
+  const validTabs = ['integrations', 'notifications', 'business', 'pricing', 'security']
   const initialTab = tabParam && validTabs.includes(tabParam) ? tabParam : 'integrations'
 
   const [loading, setLoading] = useState(false)
@@ -108,6 +111,32 @@ export default function SettingsPage() {
   const integrationStatus = settings?.integrationStatus || {}
 
   const [businessRulesDraft, setBusinessRulesDraft] = useState<Record<string, any>>({})
+
+  // Pricing state
+  type PricingTier = {
+    id?: number
+    bedrooms: number
+    bathrooms: number
+    max_sq_ft: number
+    price: number
+    labor_hours: number
+    cleaners: number
+    hours_per_cleaner: number | null
+  }
+  type PricingAddon = {
+    id?: number
+    addon_key: string
+    label: string
+    minutes: number
+    flat_price: number | null
+    active: boolean
+  }
+  const [pricingLoading, setPricingLoading] = useState(false)
+  const [pricingSaving, setPricingSaving] = useState(false)
+  const [standardTiers, setStandardTiers] = useState<PricingTier[]>([])
+  const [deepTiers, setDeepTiers] = useState<PricingTier[]>([])
+  const [addons, setAddons] = useState<PricingAddon[]>([])
+  const [pricingError, setPricingError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -132,6 +161,78 @@ export default function SettingsPage() {
       cancelled = true
     }
   }, [])
+
+  // Load pricing data
+  async function loadPricing() {
+    setPricingLoading(true)
+    setPricingError(null)
+    try {
+      const res = await fetch("/api/pricing", { cache: "no-store" })
+      const json = await res.json()
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to load pricing")
+      const data = json.data
+      setStandardTiers(data.tiers?.standard || [])
+      setDeepTiers(data.tiers?.deep || [])
+      setAddons(data.addons || [])
+    } catch (e: any) {
+      setPricingError(e?.message || "Failed to load pricing")
+    } finally {
+      setPricingLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadPricing()
+  }, [])
+
+  async function savePricing() {
+    setPricingSaving(true)
+    setPricingError(null)
+    try {
+      const res = await fetch("/api/pricing", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tiers: { standard: standardTiers, deep: deepTiers },
+          addons,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to save pricing")
+    } catch (e: any) {
+      setPricingError(e?.message || "Failed to save pricing")
+    } finally {
+      setPricingSaving(false)
+    }
+  }
+
+  async function resetPricingToDefaults() {
+    setPricingSaving(true)
+    setPricingError(null)
+    try {
+      const res = await fetch("/api/pricing", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reset" }),
+      })
+      const json = await res.json()
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to reset pricing")
+      await loadPricing()
+    } catch (e: any) {
+      setPricingError(e?.message || "Failed to reset pricing")
+    } finally {
+      setPricingSaving(false)
+    }
+  }
+
+  function updateTier(type: 'standard' | 'deep', index: number, field: keyof PricingTier, value: number) {
+    const setter = type === 'standard' ? setStandardTiers : setDeepTiers
+    setter(prev => prev.map((tier, i) => i === index ? { ...tier, [field]: value } : tier))
+  }
+
+  function updateAddon(index: number, field: keyof PricingAddon, value: number | string | boolean) {
+    setAddons(prev => prev.map((addon, i) => i === index ? { ...addon, [field]: value } : addon))
+  }
 
   const updatedAtLabel = useMemo(() => {
     if (!settings?.updated_at) return null
@@ -218,6 +319,10 @@ export default function SettingsPage() {
           <TabsTrigger value="business" className="gap-2">
             <Settings className="w-4 h-4" />
             Business Rules
+          </TabsTrigger>
+          <TabsTrigger value="pricing" className="gap-2">
+            <DollarSign className="w-4 h-4" />
+            Pricing
           </TabsTrigger>
           <TabsTrigger value="security" className="gap-2">
             <Shield className="w-4 h-4" />
@@ -679,6 +784,243 @@ export default function SettingsPage() {
               {saving ? "Saving…" : "Save all business settings"}
             </Button>
           </div>
+        </TabsContent>
+
+        <TabsContent value="pricing" className="space-y-6">
+          {pricingError && <p className="text-sm text-destructive">{pricingError}</p>}
+
+          <div className="flex justify-between items-center">
+            <div>
+              <h3 className="text-lg font-medium">Pricing Configuration</h3>
+              <p className="text-sm text-muted-foreground">
+                Set prices for Standard and Deep cleaning services by bedroom/bathroom count
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={resetPricingToDefaults}
+                disabled={pricingLoading || pricingSaving}
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Reset to Defaults
+              </Button>
+              <Button onClick={savePricing} disabled={pricingLoading || pricingSaving}>
+                <Save className="w-4 h-4 mr-2" />
+                {pricingSaving ? "Saving…" : "Save Pricing"}
+              </Button>
+            </div>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Standard Cleaning Prices</CardTitle>
+              <CardDescription>
+                Pricing for regular cleaning services
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pricingLoading ? (
+                <p className="text-sm text-muted-foreground">Loading pricing...</p>
+              ) : standardTiers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No pricing tiers configured. Click "Reset to Defaults" to initialize.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2 px-2">Beds</th>
+                        <th className="text-left py-2 px-2">Baths</th>
+                        <th className="text-left py-2 px-2">Max Sq Ft</th>
+                        <th className="text-left py-2 px-2">Price ($)</th>
+                        <th className="text-left py-2 px-2">Labor Hrs</th>
+                        <th className="text-left py-2 px-2">Cleaners</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {standardTiers.slice(0, 20).map((tier, idx) => (
+                        <tr key={`standard-${idx}`} className="border-b">
+                          <td className="py-2 px-2">{tier.bedrooms}</td>
+                          <td className="py-2 px-2">{tier.bathrooms}</td>
+                          <td className="py-2 px-2">{tier.max_sq_ft}</td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              className="w-24 h-8"
+                              value={tier.price}
+                              onChange={(e) => updateTier('standard', idx, 'price', parseFloat(e.target.value) || 0)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              step="0.25"
+                              className="w-20 h-8"
+                              value={tier.labor_hours}
+                              onChange={(e) => updateTier('standard', idx, 'labor_hours', parseFloat(e.target.value) || 0)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              className="w-16 h-8"
+                              value={tier.cleaners}
+                              onChange={(e) => updateTier('standard', idx, 'cleaners', parseInt(e.target.value) || 1)}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {standardTiers.length > 20 && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Showing first 20 of {standardTiers.length} tiers
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Deep Cleaning Prices</CardTitle>
+              <CardDescription>
+                Pricing for deep cleaning and move-in/out services
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pricingLoading ? (
+                <p className="text-sm text-muted-foreground">Loading pricing...</p>
+              ) : deepTiers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No pricing tiers configured.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2 px-2">Beds</th>
+                        <th className="text-left py-2 px-2">Baths</th>
+                        <th className="text-left py-2 px-2">Max Sq Ft</th>
+                        <th className="text-left py-2 px-2">Price ($)</th>
+                        <th className="text-left py-2 px-2">Labor Hrs</th>
+                        <th className="text-left py-2 px-2">Cleaners</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deepTiers.slice(0, 20).map((tier, idx) => (
+                        <tr key={`deep-${idx}`} className="border-b">
+                          <td className="py-2 px-2">{tier.bedrooms}</td>
+                          <td className="py-2 px-2">{tier.bathrooms}</td>
+                          <td className="py-2 px-2">{tier.max_sq_ft}</td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              className="w-24 h-8"
+                              value={tier.price}
+                              onChange={(e) => updateTier('deep', idx, 'price', parseFloat(e.target.value) || 0)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              step="0.25"
+                              className="w-20 h-8"
+                              value={tier.labor_hours}
+                              onChange={(e) => updateTier('deep', idx, 'labor_hours', parseFloat(e.target.value) || 0)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              className="w-16 h-8"
+                              value={tier.cleaners}
+                              onChange={(e) => updateTier('deep', idx, 'cleaners', parseInt(e.target.value) || 1)}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {deepTiers.length > 20 && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Showing first 20 of {deepTiers.length} tiers
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Add-ons</CardTitle>
+              <CardDescription>
+                Configure pricing for additional services
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pricingLoading ? (
+                <p className="text-sm text-muted-foreground">Loading addons...</p>
+              ) : addons.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No add-ons configured.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2 px-2">Add-on</th>
+                        <th className="text-left py-2 px-2">Label</th>
+                        <th className="text-left py-2 px-2">Minutes</th>
+                        <th className="text-left py-2 px-2">Flat Price ($)</th>
+                        <th className="text-left py-2 px-2">Active</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {addons.map((addon, idx) => (
+                        <tr key={addon.addon_key} className="border-b">
+                          <td className="py-2 px-2 font-mono text-xs">{addon.addon_key}</td>
+                          <td className="py-2 px-2">
+                            <Input
+                              className="w-40 h-8"
+                              value={addon.label}
+                              onChange={(e) => updateAddon(idx, 'label', e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              className="w-20 h-8"
+                              value={addon.minutes}
+                              onChange={(e) => updateAddon(idx, 'minutes', parseInt(e.target.value) || 0)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              className="w-24 h-8"
+                              value={addon.flat_price ?? ''}
+                              placeholder="Time-based"
+                              onChange={(e) => updateAddon(idx, 'flat_price', e.target.value ? parseFloat(e.target.value) : null as any)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Switch
+                              checked={addon.active}
+                              onCheckedChange={(checked) => updateAddon(idx, 'active', checked)}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="security" className="space-y-6">

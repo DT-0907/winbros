@@ -68,7 +68,7 @@ INSERT INTO tenants (
   -- Basic Info
   'WinBros Cleaning',
   'winbros',
-  'jaspergrenager@gmail.com',
+  '{{OWNER_EMAIL}}',
   crypt('test', gen_salt('bf')),
 
   -- Business Info
@@ -102,7 +102,7 @@ INSERT INTO tenants (
 
   -- Telegram (get from BotFather)
   '{{TELEGRAM_BOT_TOKEN}}',
-  '8521488394',  -- Owner chat ID (Delbert)
+  '{{TELEGRAM_CHAT_ID}}',  -- Owner chat ID
 
   -- Wave (get from Wave Dashboard -> Integrations)
   '{{WAVE_API_TOKEN}}',
@@ -136,8 +136,8 @@ INSERT INTO tenants (
   }'::jsonb,
 
   -- Owner Contact
-  '+14242755847',
-  'jaspergrenager@gmail.com',
+  '{{OWNER_PHONE}}',
+  '{{OWNER_EMAIL}}',
   NULL
 );
 
@@ -152,9 +152,52 @@ SELECT
   'winbros',
   crypt('test', gen_salt('bf')),
   'WinBros Admin',
-  'jaspergrenager@gmail.com'
+  '{{OWNER_EMAIL}}'
 FROM tenants
 WHERE slug = 'winbros';
+
+-- ============================================================================
+-- INITIALIZE PRICING FOR WINBROS
+-- ============================================================================
+-- Insert sample pricing tiers (subset of common bedroom/bathroom combos)
+
+INSERT INTO pricing_tiers (tenant_id, service_type, bedrooms, bathrooms, max_sq_ft, price, price_min, price_max, labor_hours, cleaners, hours_per_cleaner)
+SELECT
+  t.id,
+  'standard',
+  1, 1, 800, 200, 200, 200, 4, 1, 4
+FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 2, 1, 999, 237.5, 225, 250, 4.5, 1, 4.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 2, 2, 1250, 262.5, 250, 275, 5.5, 1, 5.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 3, 2, 1500, 362.5, 350, 375, 7, 2, 3.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 3, 2.5, 1749, 387.5, 375, 400, 7.5, 2, 3.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 3, 3, 1999, 400, 375, 425, 8, 2, 4 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 4, 2, 2124, 475, 450, 500, 9.5, 2, 4.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 4, 2.5, 2249, 500, 475, 525, 9.5, 2, 4.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 4, 3, 2374, 525, 500, 550, 10.5, 2, 5.25 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'standard', 5, 3, 3499, 825, 775, 875, 14.25, 3, 4.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 1, 1, 800, 225, 200, 250, 4.5, 1, 4.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 2, 1, 999, 287.5, 275, 300, 5.5, 1, 5.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 2, 2, 1250, 325, 300, 350, 6.5, 1, 6.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 3, 2, 1500, 425, 400, 450, 9, 2, 4.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 3, 2.5, 1749, 475, 437.5, 512.5, 9.5, 2, 4.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 3, 3, 1999, 475, 450, 500, 10, 2, 5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 4, 2, 2001, 625, 600, 650, 13, 2, 6.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 4, 2.5, 2249, 700, 650, 750, 13.5, 2, 6.75 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 4, 3, 2499, 725, 700, 750, 15, 2, 7.5 FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'deep', 5, 3, 3499, 1050, 1000, 1100, 18.75, 3, 6.25 FROM tenants t WHERE t.slug = 'winbros'
+ON CONFLICT (tenant_id, service_type, bedrooms, bathrooms, max_sq_ft) DO NOTHING;
+
+-- Insert pricing add-ons
+INSERT INTO pricing_addons (tenant_id, addon_key, label, minutes, flat_price, price_multiplier, included_in, keywords, active)
+SELECT t.id, 'inside_fridge', 'Inside fridge', 30, NULL, 1, ARRAY['move'], ARRAY['inside fridge', 'fridge interior'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'inside_oven', 'Inside oven', 30, NULL, 1, ARRAY['move'], ARRAY['inside oven', 'oven interior'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'inside_cabinets', 'Inside cabinets', 60, NULL, 1, ARRAY['move'], ARRAY['inside cabinets', 'cabinet interior'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_interior', 'Interior windows', 30, 50, 1, NULL, ARRAY['interior windows', 'inside windows'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_exterior', 'Exterior windows', 60, 100, 1, NULL, ARRAY['exterior windows', 'outside windows'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_both', 'Interior + exterior windows', 90, 150, 1, NULL, ARRAY['both windows', 'all windows'], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'pet_fee', 'Pet fee', 0, 25, 1, NULL, ARRAY['pet', 'pets', 'dog', 'cat'], true FROM tenants t WHERE t.slug = 'winbros'
+ON CONFLICT (tenant_id, addon_key) DO NOTHING;
 
 -- ============================================================================
 -- VERIFICATION
@@ -173,6 +216,17 @@ SELECT
   active
 FROM tenants
 WHERE slug = 'winbros';
+
+-- Verify pricing was created
+SELECT 'Pricing Tiers Count' as check_name, COUNT(*) as count
+FROM pricing_tiers pt
+JOIN tenants t ON pt.tenant_id = t.id
+WHERE t.slug = 'winbros'
+UNION ALL
+SELECT 'Pricing Addons Count', COUNT(*)
+FROM pricing_addons pa
+JOIN tenants t ON pa.tenant_id = t.id
+WHERE t.slug = 'winbros';
 
 -- ============================================================================
 -- WEBHOOK URLS (Configure in external services)

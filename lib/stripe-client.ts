@@ -17,6 +17,13 @@ import {
   getAddOnsFromNotes,
   getOverridesFromNotes,
 } from './pricing-config'
+import {
+  getPricingTiers,
+  getPricingAddons,
+  getPricingRow as getPricingRowFromDb,
+  type PricingRow as DbPricingRow,
+  type PricingAddon as DbPricingAddon,
+} from './pricing-db'
 
 // Initialize Stripe client
 function getStripeClient(): Stripe {
@@ -500,6 +507,9 @@ export function calculateJobPrice(
   return calculateJobEstimate(job, customer).totalPrice
 }
 
+/**
+ * Synchronous job estimate using static pricing (for backwards compatibility)
+ */
 export function calculateJobEstimate(
   job: Partial<Job>,
   customer?: { bedrooms?: number; bathrooms?: number; square_footage?: number }
@@ -589,6 +599,139 @@ export function calculateJobEstimate(
     cleanerPay: roundCurrency(totalHours * config.cleanerHourlyRate),
     addOns,
   }
+}
+
+/**
+ * Async job estimate using database pricing (preferred for tenant-specific pricing)
+ * Falls back to static pricing if no tenant-specific pricing exists
+ */
+export async function calculateJobEstimateAsync(
+  job: Partial<Job>,
+  customer?: { bedrooms?: number; bathrooms?: number; square_footage?: number },
+  tenantId?: string
+): Promise<JobPricingEstimate> {
+  const basePrices: Record<string, number> = {
+    'Standard cleaning': 150,
+    'Deep cleaning': 250,
+    'Move in/out': 300,
+    'Move-in/out': 300,
+    'Move in': 300,
+    'Move out': 300,
+  }
+
+  const serviceTier = normalizeServiceTier(job.service_type)
+  const pricingTier = serviceTier === 'move' ? 'deep' : serviceTier
+
+  const overrides = getOverridesFromNotes(job.notes)
+  const bedrooms = normalizeCount(
+    overrides.bedrooms ??
+      customer?.bedrooms ??
+      (job as Record<string, unknown>).bedrooms
+  )
+  const bathrooms = normalizeBathroomCount(
+    overrides.bathrooms ??
+      customer?.bathrooms ??
+      (job as Record<string, unknown>).bathrooms
+  )
+  const squareFootage = normalizeCount(
+    overrides.squareFootage ??
+      customer?.square_footage ??
+      (job as Record<string, unknown>).square_footage ??
+      (job as Record<string, unknown>).squareFootage
+  )
+
+  // Fetch pricing from database (with tenant-specific pricing)
+  let baseRow: DbPricingRow | null = null
+  if (pricingTier && bedrooms && bathrooms) {
+    baseRow = await getPricingRowFromDb(pricingTier, bedrooms, bathrooms, squareFootage, tenantId)
+  }
+
+  // Also fetch addons from database
+  const dbAddons = await getPricingAddons(tenantId)
+
+  const fallbackBase = basePrices[job.service_type || 'Standard cleaning'] ?? 150
+  const basePrice = baseRow?.price ?? fallbackBase
+  const baseHours = baseRow?.labor_hours ?? 0
+  const cleaners = baseRow?.cleaners ?? 1
+  const baseHoursPerCleaner = baseRow?.hours_per_cleaner ?? (cleaners ? baseHours / cleaners : baseHours)
+
+  const clientRate = baseHours > 0 ? basePrice / baseHours : 0
+  const addOns = getAddOnsFromNotes(job.notes)
+
+  let addOnHours = 0
+  let addOnPrice = 0
+
+  for (const addOnKey of addOns) {
+    // First check database addons
+    const dbAddon = dbAddons.find(a => a.addon_key === addOnKey)
+    if (dbAddon) {
+      // Check if included in this service tier
+      if (serviceTier && dbAddon.included_in?.includes(serviceTier)) {
+        continue
+      }
+
+      const hours = dbAddon.minutes / 60
+      addOnHours += hours
+
+      if (typeof dbAddon.flat_price === 'number' && dbAddon.flat_price !== null) {
+        addOnPrice += dbAddon.flat_price
+      } else {
+        const multiplier = dbAddon.price_multiplier ?? 1
+        addOnPrice += clientRate * hours * multiplier
+      }
+    } else {
+      // Fall back to static addon definition
+      const def = getAddOnDefinition(addOnKey)
+      if (!def) continue
+      if (serviceTier && def.included_in?.includes(serviceTier)) {
+        continue
+      }
+
+      const hours = def.minutes / 60
+      addOnHours += hours
+
+      if (typeof def.flat_price === 'number') {
+        addOnPrice += def.flat_price
+      } else {
+        const multiplier = def.price_multiplier ?? 1
+        addOnPrice += clientRate * hours * multiplier
+      }
+    }
+  }
+
+  const totalHours = baseHours + addOnHours
+  const hoursPerCleaner = cleaners ? totalHours / cleaners : totalHours
+  const config = getClientConfig()
+  const pricingAdjustmentPct = resolvePricingAdjustmentPct(job, config)
+  const pricingAdjustmentAmount = roundCurrency((basePrice + addOnPrice) * (pricingAdjustmentPct / 100))
+  const totalPrice = roundCurrency(basePrice + addOnPrice + pricingAdjustmentAmount)
+
+  return {
+    basePrice: roundCurrency(basePrice),
+    addOnPrice: roundCurrency(addOnPrice),
+    totalPrice,
+    pricingAdjustmentPct,
+    pricingAdjustmentAmount,
+    baseHours: roundHours(baseHours),
+    addOnHours: roundHours(addOnHours),
+    totalHours: roundHours(totalHours),
+    cleaners,
+    hoursPerCleaner: roundHours(hoursPerCleaner || baseHoursPerCleaner),
+    cleanerPay: roundCurrency(totalHours * config.cleanerHourlyRate),
+    addOns,
+  }
+}
+
+/**
+ * Async price calculation using database pricing
+ */
+export async function calculateJobPriceAsync(
+  job: Partial<Job>,
+  customer?: { bedrooms?: number; bathrooms?: number; square_footage?: number },
+  tenantId?: string
+): Promise<number> {
+  const estimate = await calculateJobEstimateAsync(job, customer, tenantId)
+  return estimate.totalPrice
 }
 
 function normalizeServiceTier(serviceType?: string | null): PricingTier {

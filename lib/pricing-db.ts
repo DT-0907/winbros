@@ -1,0 +1,357 @@
+/**
+ * Database-backed Pricing System
+ *
+ * Reads pricing from the database (pricing_tiers and pricing_addons tables)
+ * Falls back to static JSON if no tenant-specific pricing exists.
+ */
+
+import { getSupabaseClient } from './supabase'
+import { getDefaultTenant } from './tenant'
+import pricingDataFallback from './pricing-data.json'
+
+export type PricingTier = 'standard' | 'deep' | 'move'
+
+export type PricingRow = {
+  id?: number
+  tenant_id?: string
+  service_type: string
+  bedrooms: number
+  bathrooms: number
+  max_sq_ft: number
+  price: number
+  price_min: number | null
+  price_max: number | null
+  labor_hours: number
+  cleaners: number
+  hours_per_cleaner: number | null
+}
+
+export type PricingAddon = {
+  id?: number
+  tenant_id?: string
+  addon_key: string
+  label: string
+  minutes: number
+  flat_price: number | null
+  price_multiplier: number
+  included_in: string[] | null
+  keywords: string[] | null
+  active: boolean
+}
+
+/**
+ * Get pricing tiers for a tenant from the database
+ * Falls back to static JSON if no tenant-specific pricing exists
+ */
+export async function getPricingTiers(tenantId?: string): Promise<{
+  standard: PricingRow[]
+  deep: PricingRow[]
+}> {
+  try {
+    const client = getSupabaseClient()
+
+    // Get tenant ID if not provided
+    let tId = tenantId
+    if (!tId) {
+      const tenant = await getDefaultTenant()
+      tId = tenant?.id
+    }
+
+    if (!tId) {
+      console.log('[pricing-db] No tenant ID, using fallback pricing')
+      return pricingDataFallback as { standard: PricingRow[]; deep: PricingRow[] }
+    }
+
+    // Fetch pricing tiers from database
+    const { data, error } = await client
+      .from('pricing_tiers')
+      .select('*')
+      .eq('tenant_id', tId)
+      .order('bedrooms', { ascending: true })
+      .order('bathrooms', { ascending: true })
+      .order('max_sq_ft', { ascending: true })
+
+    if (error) {
+      console.error('[pricing-db] Error fetching pricing tiers:', error)
+      return pricingDataFallback as { standard: PricingRow[]; deep: PricingRow[] }
+    }
+
+    if (!data || data.length === 0) {
+      console.log('[pricing-db] No pricing data for tenant, using fallback')
+      return pricingDataFallback as { standard: PricingRow[]; deep: PricingRow[] }
+    }
+
+    // Split into standard and deep
+    const standard = data.filter((row) => row.service_type === 'standard')
+    const deep = data.filter((row) => row.service_type === 'deep')
+
+    return { standard, deep }
+  } catch (error) {
+    console.error('[pricing-db] Error:', error)
+    return pricingDataFallback as { standard: PricingRow[]; deep: PricingRow[] }
+  }
+}
+
+/**
+ * Get add-ons for a tenant from the database
+ */
+export async function getPricingAddons(tenantId?: string): Promise<PricingAddon[]> {
+  try {
+    const client = getSupabaseClient()
+
+    let tId = tenantId
+    if (!tId) {
+      const tenant = await getDefaultTenant()
+      tId = tenant?.id
+    }
+
+    if (!tId) {
+      return getDefaultAddons()
+    }
+
+    const { data, error } = await client
+      .from('pricing_addons')
+      .select('*')
+      .eq('tenant_id', tId)
+      .eq('active', true)
+
+    if (error) {
+      console.error('[pricing-db] Error fetching addons:', error)
+      return getDefaultAddons()
+    }
+
+    if (!data || data.length === 0) {
+      return getDefaultAddons()
+    }
+
+    return data
+  } catch (error) {
+    console.error('[pricing-db] Error:', error)
+    return getDefaultAddons()
+  }
+}
+
+/**
+ * Get a specific pricing row by bedrooms/bathrooms/service type
+ */
+export async function getPricingRow(
+  serviceType: PricingTier,
+  bedrooms: number,
+  bathrooms: number,
+  squareFootage?: number | null,
+  tenantId?: string
+): Promise<PricingRow | null> {
+  const pricingTier = serviceType === 'move' ? 'deep' : serviceType
+  const tiers = await getPricingTiers(tenantId)
+  const rows = tiers[pricingTier] || []
+
+  // Filter by bedrooms and bathrooms
+  const matching = rows.filter(
+    (row) => row.bedrooms === bedrooms && row.bathrooms === bathrooms
+  )
+
+  if (matching.length === 0) return null
+
+  // Sort by max_sq_ft ascending
+  const sorted = [...matching].sort((a, b) => a.max_sq_ft - b.max_sq_ft)
+
+  // If square footage provided, find the appropriate tier
+  if (squareFootage && squareFootage > 0) {
+    const found = sorted.find((row) => row.max_sq_ft >= squareFootage)
+    return found || sorted[sorted.length - 1]
+  }
+
+  // Default to largest tier
+  return sorted[sorted.length - 1]
+}
+
+/**
+ * Save pricing tiers for a tenant
+ */
+export async function savePricingTiers(
+  tenantId: string,
+  tiers: PricingRow[]
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const client = getSupabaseClient()
+
+    // Delete existing pricing for this tenant
+    const { error: deleteError } = await client
+      .from('pricing_tiers')
+      .delete()
+      .eq('tenant_id', tenantId)
+
+    if (deleteError) {
+      console.error('[pricing-db] Error deleting existing pricing:', deleteError)
+      return { success: false, error: 'Failed to update pricing' }
+    }
+
+    // Insert new pricing
+    const tiersWithTenant = tiers.map((tier) => ({
+      ...tier,
+      tenant_id: tenantId,
+      // Remove id to let database generate it
+      id: undefined,
+    }))
+
+    const { error: insertError } = await client
+      .from('pricing_tiers')
+      .insert(tiersWithTenant)
+
+    if (insertError) {
+      console.error('[pricing-db] Error inserting pricing:', insertError)
+      return { success: false, error: 'Failed to save pricing' }
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error('[pricing-db] Error saving pricing:', error)
+    return { success: false, error: 'Unexpected error' }
+  }
+}
+
+/**
+ * Save add-ons for a tenant
+ */
+export async function savePricingAddons(
+  tenantId: string,
+  addons: PricingAddon[]
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const client = getSupabaseClient()
+
+    // Delete existing addons for this tenant
+    const { error: deleteError } = await client
+      .from('pricing_addons')
+      .delete()
+      .eq('tenant_id', tenantId)
+
+    if (deleteError) {
+      console.error('[pricing-db] Error deleting existing addons:', deleteError)
+      return { success: false, error: 'Failed to update addons' }
+    }
+
+    // Insert new addons
+    const addonsWithTenant = addons.map((addon) => ({
+      ...addon,
+      tenant_id: tenantId,
+      id: undefined,
+    }))
+
+    const { error: insertError } = await client
+      .from('pricing_addons')
+      .insert(addonsWithTenant)
+
+    if (insertError) {
+      console.error('[pricing-db] Error inserting addons:', insertError)
+      return { success: false, error: 'Failed to save addons' }
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error('[pricing-db] Error saving addons:', error)
+    return { success: false, error: 'Unexpected error' }
+  }
+}
+
+/**
+ * Default add-ons (fallback when no tenant-specific data)
+ */
+function getDefaultAddons(): PricingAddon[] {
+  return [
+    {
+      addon_key: 'inside_fridge',
+      label: 'Inside fridge',
+      minutes: 30,
+      flat_price: null,
+      price_multiplier: 1,
+      included_in: ['move'],
+      keywords: ['inside fridge', 'fridge interior', 'clean fridge'],
+      active: true,
+    },
+    {
+      addon_key: 'inside_oven',
+      label: 'Inside oven',
+      minutes: 30,
+      flat_price: null,
+      price_multiplier: 1,
+      included_in: ['move'],
+      keywords: ['inside oven', 'oven interior', 'clean oven'],
+      active: true,
+    },
+    {
+      addon_key: 'inside_cabinets',
+      label: 'Inside cabinets',
+      minutes: 60,
+      flat_price: null,
+      price_multiplier: 1,
+      included_in: ['move'],
+      keywords: ['inside cabinets', 'cabinet interior'],
+      active: true,
+    },
+    {
+      addon_key: 'windows_interior',
+      label: 'Interior windows',
+      minutes: 30,
+      flat_price: 50,
+      price_multiplier: 1,
+      included_in: null,
+      keywords: ['interior windows', 'inside windows'],
+      active: true,
+    },
+    {
+      addon_key: 'windows_exterior',
+      label: 'Exterior windows',
+      minutes: 60,
+      flat_price: 100,
+      price_multiplier: 1,
+      included_in: null,
+      keywords: ['exterior windows', 'outside windows'],
+      active: true,
+    },
+    {
+      addon_key: 'windows_both',
+      label: 'Interior + exterior windows',
+      minutes: 90,
+      flat_price: 150,
+      price_multiplier: 1,
+      included_in: null,
+      keywords: ['both windows', 'all windows'],
+      active: true,
+    },
+    {
+      addon_key: 'pet_fee',
+      label: 'Pet fee',
+      minutes: 0,
+      flat_price: 25,
+      price_multiplier: 1,
+      included_in: null,
+      keywords: ['pet', 'pets', 'dog', 'cat'],
+      active: true,
+    },
+  ]
+}
+
+/**
+ * Initialize pricing for a tenant from the default JSON
+ * Call this when a new tenant is created or to reset to defaults
+ */
+export async function initializeTenantPricing(
+  tenantId: string
+): Promise<{ success: boolean; error?: string }> {
+  const fallback = pricingDataFallback as { standard: PricingRow[]; deep: PricingRow[] }
+
+  // Convert fallback to pricing rows with service_type
+  const allTiers: PricingRow[] = [
+    ...fallback.standard.map((row) => ({ ...row, service_type: 'standard' })),
+    ...fallback.deep.map((row) => ({ ...row, service_type: 'deep' })),
+  ]
+
+  const tiersResult = await savePricingTiers(tenantId, allTiers)
+  if (!tiersResult.success) {
+    return tiersResult
+  }
+
+  const addonsResult = await savePricingAddons(tenantId, getDefaultAddons())
+  return addonsResult
+}

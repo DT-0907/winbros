@@ -16,6 +16,8 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Drop existing tables in reverse dependency order
 DROP TABLE IF EXISTS scheduled_tasks CASCADE;
 DROP TABLE IF EXISTS system_events CASCADE;
+DROP TABLE IF EXISTS pricing_addons CASCADE;
+DROP TABLE IF EXISTS pricing_tiers CASCADE;
 DROP TABLE IF EXISTS cleaner_assignments CASCADE;
 DROP TABLE IF EXISTS reviews CASCADE;
 DROP TABLE IF EXISTS upsells CASCADE;
@@ -660,6 +662,80 @@ CREATE INDEX idx_system_events_type ON system_events(event_type);
 CREATE INDEX idx_system_events_created ON system_events(created_at DESC);
 
 -- ============================================================================
+-- PRICING TIERS TABLE (Per-tenant pricing)
+-- ============================================================================
+-- Stores pricing matrix for each tenant (bedrooms x bathrooms x service type)
+-- ============================================================================
+
+CREATE TABLE pricing_tiers (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Service type: 'standard' or 'deep'
+  service_type TEXT NOT NULL CHECK (service_type IN ('standard', 'deep')),
+
+  -- Property dimensions
+  bedrooms INTEGER NOT NULL CHECK (bedrooms >= 1 AND bedrooms <= 10),
+  bathrooms DECIMAL(3, 1) NOT NULL CHECK (bathrooms >= 1 AND bathrooms <= 10),
+  max_sq_ft INTEGER NOT NULL CHECK (max_sq_ft > 0),
+
+  -- Pricing
+  price DECIMAL(10, 2) NOT NULL CHECK (price > 0),
+  price_min DECIMAL(10, 2),
+  price_max DECIMAL(10, 2),
+
+  -- Labor estimates
+  labor_hours DECIMAL(5, 2) NOT NULL CHECK (labor_hours > 0),
+  cleaners INTEGER NOT NULL DEFAULT 1 CHECK (cleaners >= 1),
+  hours_per_cleaner DECIMAL(5, 2),
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Each tenant can only have one price per combination
+  UNIQUE(tenant_id, service_type, bedrooms, bathrooms, max_sq_ft)
+);
+
+CREATE INDEX idx_pricing_tiers_tenant ON pricing_tiers(tenant_id);
+CREATE INDEX idx_pricing_tiers_lookup ON pricing_tiers(tenant_id, service_type, bedrooms, bathrooms);
+
+-- ============================================================================
+-- PRICING ADDONS TABLE (Per-tenant add-on pricing)
+-- ============================================================================
+
+CREATE TABLE pricing_addons (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Add-on identification
+  addon_key TEXT NOT NULL,                              -- 'inside_fridge', 'windows_interior', etc.
+  label TEXT NOT NULL,                                  -- Display name
+
+  -- Pricing
+  minutes INTEGER NOT NULL DEFAULT 0,                   -- Time in minutes
+  flat_price DECIMAL(10, 2),                            -- Flat price (if applicable)
+  price_multiplier DECIMAL(5, 2) DEFAULT 1,             -- Multiplier for hourly rate
+
+  -- Inclusion rules
+  included_in TEXT[],                                   -- Service types where this is included
+
+  -- Detection keywords
+  keywords TEXT[],                                      -- Keywords for auto-detection
+
+  -- Status
+  active BOOLEAN DEFAULT TRUE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Each tenant can only have one addon per key
+  UNIQUE(tenant_id, addon_key)
+);
+
+CREATE INDEX idx_pricing_addons_tenant ON pricing_addons(tenant_id);
+CREATE INDEX idx_pricing_addons_key ON pricing_addons(tenant_id, addon_key);
+
+-- ============================================================================
 -- SCHEDULED TASKS TABLE (Replaces QStash)
 -- ============================================================================
 
@@ -736,6 +812,12 @@ CREATE TRIGGER leads_updated_at BEFORE UPDATE ON leads
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE TRIGGER scheduled_tasks_updated_at BEFORE UPDATE ON scheduled_tasks
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER pricing_tiers_updated_at BEFORE UPDATE ON pricing_tiers
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER pricing_addons_updated_at BEFORE UPDATE ON pricing_addons
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ============================================================================

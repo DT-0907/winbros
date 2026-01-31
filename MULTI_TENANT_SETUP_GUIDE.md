@@ -210,7 +210,7 @@ Update webhook URLs in each external service:
 
 ### Telegram Bot
 ```bash
-curl "https://api.telegram.org/bot8586633109:AAFrM9VqeRH00hUwymOkxp93_Ql-CVxX2M4/setWebhook?url=https://spotless-scrubbers-api.vercel.app/api/webhooks/telegram/winbros"
+curl "https://api.telegram.org/bot8239296828:AAH4AO9rzb26ByGg0jfTlWL6F3efli7WKqQ/setWebhook?url=https://spotless-scrubbers-api.vercel.app/api/webhooks/telegram/winbros"
 ```
 
 ---
