@@ -188,15 +188,15 @@ UNION ALL SELECT t.id, 'deep', 4, 3, 2499, 725, 700, 750, 15, 2, 7.5 FROM tenant
 UNION ALL SELECT t.id, 'deep', 5, 3, 3499, 1050, 1000, 1100, 18.75, 3, 6.25 FROM tenants t WHERE t.slug = 'winbros'
 ON CONFLICT (tenant_id, service_type, bedrooms, bathrooms, max_sq_ft) DO NOTHING;
 
--- Insert pricing add-ons
+-- Insert pricing add-ons (using explicit casts for NULL values to ensure type consistency in UNION)
 INSERT INTO pricing_addons (tenant_id, addon_key, label, minutes, flat_price, price_multiplier, included_in, keywords, active)
-SELECT t.id, 'inside_fridge', 'Inside fridge', 30, NULL, 1, ARRAY['move'], ARRAY['inside fridge', 'fridge interior'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'inside_oven', 'Inside oven', 30, NULL, 1, ARRAY['move'], ARRAY['inside oven', 'oven interior'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'inside_cabinets', 'Inside cabinets', 60, NULL, 1, ARRAY['move'], ARRAY['inside cabinets', 'cabinet interior'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'windows_interior', 'Interior windows', 30, 50, 1, NULL, ARRAY['interior windows', 'inside windows'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'windows_exterior', 'Exterior windows', 60, 100, 1, NULL, ARRAY['exterior windows', 'outside windows'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'windows_both', 'Interior + exterior windows', 90, 150, 1, NULL, ARRAY['both windows', 'all windows'], true FROM tenants t WHERE t.slug = 'winbros'
-UNION ALL SELECT t.id, 'pet_fee', 'Pet fee', 0, 25, 1, NULL, ARRAY['pet', 'pets', 'dog', 'cat'], true FROM tenants t WHERE t.slug = 'winbros'
+SELECT t.id, 'inside_fridge', 'Inside fridge', 30, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside fridge', 'fridge interior']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'inside_oven', 'Inside oven', 30, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside oven', 'oven interior']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'inside_cabinets', 'Inside cabinets', 60, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside cabinets', 'cabinet interior']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_interior', 'Interior windows', 30, 50::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['interior windows', 'inside windows']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_exterior', 'Exterior windows', 60, 100::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['exterior windows', 'outside windows']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'windows_both', 'Interior + exterior windows', 90, 150::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['both windows', 'all windows']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
+UNION ALL SELECT t.id, 'pet_fee', 'Pet fee', 0, 25::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['pet', 'pets', 'dog', 'cat']::TEXT[], true FROM tenants t WHERE t.slug = 'winbros'
 ON CONFLICT (tenant_id, addon_key) DO NOTHING;
 
 -- ============================================================================

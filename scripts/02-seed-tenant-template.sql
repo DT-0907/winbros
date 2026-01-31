@@ -168,6 +168,44 @@ FROM tenants
 WHERE slug = '{{TENANT_SLUG}}';
 
 -- ============================================================================
+-- INITIALIZE DEFAULT PRICING
+-- ============================================================================
+-- This creates a basic pricing structure. Edit prices as needed for this tenant.
+
+-- Insert sample pricing tiers (common bedroom/bathroom combos)
+INSERT INTO pricing_tiers (tenant_id, service_type, bedrooms, bathrooms, max_sq_ft, price, price_min, price_max, labor_hours, cleaners, hours_per_cleaner)
+SELECT
+  t.id,
+  'standard',
+  1, 1, 800, 200, 200, 200, 4, 1, 4
+FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 2, 1, 999, 237.5, 225, 250, 4.5, 1, 4.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 2, 2, 1250, 262.5, 250, 275, 5.5, 1, 5.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 3, 2, 1500, 362.5, 350, 375, 7, 2, 3.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 3, 3, 1999, 400, 375, 425, 8, 2, 4 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 4, 2, 2124, 475, 450, 500, 9.5, 2, 4.75 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'standard', 4, 3, 2374, 525, 500, 550, 10.5, 2, 5.25 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 1, 1, 800, 225, 200, 250, 4.5, 1, 4.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 2, 1, 999, 287.5, 275, 300, 5.5, 1, 5.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 2, 2, 1250, 325, 300, 350, 6.5, 1, 6.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 3, 2, 1500, 425, 400, 450, 9, 2, 4.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 3, 3, 1999, 475, 450, 500, 10, 2, 5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 4, 2, 2001, 625, 600, 650, 13, 2, 6.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'deep', 4, 3, 2499, 725, 700, 750, 15, 2, 7.5 FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+ON CONFLICT (tenant_id, service_type, bedrooms, bathrooms, max_sq_ft) DO NOTHING;
+
+-- Insert default pricing add-ons (with explicit type casts for UNION compatibility)
+INSERT INTO pricing_addons (tenant_id, addon_key, label, minutes, flat_price, price_multiplier, included_in, keywords, active)
+SELECT t.id, 'inside_fridge', 'Inside fridge', 30, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside fridge', 'fridge interior']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'inside_oven', 'Inside oven', 30, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside oven', 'oven interior']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'inside_cabinets', 'Inside cabinets', 60, NULL::DECIMAL(10,2), 1::DECIMAL(5,2), ARRAY['move']::TEXT[], ARRAY['inside cabinets', 'cabinet interior']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'windows_interior', 'Interior windows', 30, 50::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['interior windows', 'inside windows']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'windows_exterior', 'Exterior windows', 60, 100::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['exterior windows', 'outside windows']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'windows_both', 'Interior + exterior windows', 90, 150::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['both windows', 'all windows']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL SELECT t.id, 'pet_fee', 'Pet fee', 0, 25::DECIMAL(10,2), 1::DECIMAL(5,2), NULL::TEXT[], ARRAY['pet', 'pets', 'dog', 'cat']::TEXT[], true FROM tenants t WHERE t.slug = '{{TENANT_SLUG}}'
+ON CONFLICT (tenant_id, addon_key) DO NOTHING;
+
+-- ============================================================================
 -- VERIFICATION
 -- ============================================================================
 
@@ -181,6 +219,17 @@ SELECT
   active
 FROM tenants
 WHERE slug = '{{TENANT_SLUG}}';
+
+-- Verify pricing was created
+SELECT 'Pricing Tiers Count' as check_name, COUNT(*) as count
+FROM pricing_tiers pt
+JOIN tenants t ON pt.tenant_id = t.id
+WHERE t.slug = '{{TENANT_SLUG}}'
+UNION ALL
+SELECT 'Pricing Addons Count', COUNT(*)
+FROM pricing_addons pa
+JOIN tenants t ON pa.tenant_id = t.id
+WHERE t.slug = '{{TENANT_SLUG}}';
 
 -- ============================================================================
 -- WEBHOOK URLS (Configure in external services)
