@@ -1,24 +1,34 @@
 -- ============================================================================
 -- MULTI-TENANT SCHEMA FOR CLEANING BUSINESS AUTOMATION PLATFORM
 -- ============================================================================
+-- VERSION: 2.0
 -- WARNING: This script DROPS all existing tables and recreates them.
 -- Run this only on a fresh database or when you want to start fresh.
 --
--- After running this, run seed-winbros.sql to add the first tenant.
+-- After running this script:
+-- 1. Run 03-seed-winbros.sql to add the WinBros tenant
+-- 2. Run 04-seed-winbros-cleaners.sql to add cleaners
 -- ============================================================================
 
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Drop existing tables in reverse dependency order
+DROP TABLE IF EXISTS scheduled_tasks CASCADE;
 DROP TABLE IF EXISTS system_events CASCADE;
 DROP TABLE IF EXISTS cleaner_assignments CASCADE;
 DROP TABLE IF EXISTS upsells CASCADE;
 DROP TABLE IF EXISTS tips CASCADE;
 DROP TABLE IF EXISTS team_members CASCADE;
 DROP TABLE IF EXISTS teams CASCADE;
+DROP TABLE IF EXISTS calls CASCADE;
 DROP TABLE IF EXISTS messages CASCADE;
 DROP TABLE IF EXISTS leads CASCADE;
 DROP TABLE IF EXISTS jobs CASCADE;
 DROP TABLE IF EXISTS customers CASCADE;
 DROP TABLE IF EXISTS cleaners CASCADE;
+DROP TABLE IF EXISTS sessions CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS tenants CASCADE;
 
 -- ============================================================================
@@ -119,9 +129,55 @@ CREATE TABLE tenants (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Index for slug lookups (webhook routing)
 CREATE INDEX idx_tenants_slug ON tenants(slug);
 CREATE INDEX idx_tenants_active ON tenants(active) WHERE active = TRUE;
+
+-- ============================================================================
+-- USERS TABLE (for dashboard authentication)
+-- ============================================================================
+
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  display_name TEXT,
+  email TEXT,
+
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_tenant ON users(tenant_id);
+CREATE INDEX idx_users_username ON users(username);
+
+-- Password verification function
+CREATE OR REPLACE FUNCTION verify_password(password_input TEXT, password_hash TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN password_hash = crypt(password_input, password_hash);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================================
+-- SESSIONS TABLE (for dashboard sessions)
+-- ============================================================================
+
+CREATE TABLE sessions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  token TEXT UNIQUE NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_sessions_token ON sessions(token);
+CREATE INDEX idx_sessions_user ON sessions(user_id);
+CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 
 -- ============================================================================
 -- CLEANERS TABLE
@@ -135,17 +191,28 @@ CREATE TABLE cleaners (
   phone TEXT,
   email TEXT,
   telegram_id TEXT,                                -- For Telegram notifications
+  telegram_username TEXT,                          -- Telegram @username
+
+  -- Team lead status
+  is_team_lead BOOLEAN DEFAULT FALSE,
 
   -- Location for VRP assignment
   home_address TEXT,
   home_lat DECIMAL(10, 8),
   home_lng DECIMAL(11, 8),
 
+  -- Real-time location tracking
+  last_location_lat DECIMAL(10, 8),
+  last_location_lng DECIMAL(11, 8),
+  last_location_accuracy_meters DECIMAL(10, 2),
+  last_location_updated_at TIMESTAMPTZ,
+
   -- Capacity
   max_jobs_per_day INTEGER DEFAULT 3,
 
   -- Status
   active BOOLEAN DEFAULT TRUE,
+  deleted_at TIMESTAMPTZ,                          -- Soft delete
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
 
@@ -156,6 +223,7 @@ CREATE TABLE cleaners (
 CREATE INDEX idx_cleaners_tenant ON cleaners(tenant_id);
 CREATE INDEX idx_cleaners_telegram ON cleaners(telegram_id);
 CREATE INDEX idx_cleaners_active ON cleaners(tenant_id, active) WHERE active = TRUE;
+CREATE INDEX idx_cleaners_team_lead ON cleaners(tenant_id, is_team_lead) WHERE is_team_lead = TRUE;
 
 -- ============================================================================
 -- CUSTOMERS TABLE
@@ -203,6 +271,11 @@ CREATE TABLE jobs (
   date DATE,
   scheduled_at TEXT,                               -- Time string like "10:00 AM"
 
+  -- Pricing
+  price DECIMAL(10, 2),                            -- Total price
+  hours DECIMAL(5, 2),                             -- Estimated hours
+  cleaners INTEGER DEFAULT 2,                      -- Number of cleaners needed
+
   -- Status tracking
   status TEXT DEFAULT 'pending' CHECK (status IN (
     'pending', 'scheduled', 'in_progress', 'completed', 'cancelled'
@@ -237,7 +310,6 @@ CREATE TABLE jobs (
 
   -- Metadata
   notes TEXT,
-  amount DECIMAL(10, 2),
 
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -263,7 +335,7 @@ CREATE TABLE leads (
   -- Source tracking
   source_id TEXT,                                  -- External ID from source system
   source TEXT NOT NULL CHECK (source IN (
-    'housecall_pro', 'ghl', 'meta', 'vapi', 'sms', 'website', 'manual'
+    'housecall_pro', 'ghl', 'meta', 'vapi', 'sms', 'website', 'manual', 'phone'
   )),
   ghl_location_id TEXT,
 
@@ -276,7 +348,7 @@ CREATE TABLE leads (
 
   -- Lead status
   status TEXT DEFAULT 'new' CHECK (status IN (
-    'new', 'contacted', 'qualified', 'booked', 'lost', 'unresponsive'
+    'new', 'contacted', 'qualified', 'booked', 'lost', 'unresponsive', 'nurturing', 'escalated'
   )),
 
   -- Follow-up tracking
@@ -315,18 +387,21 @@ CREATE TABLE messages (
 
   -- Direction and channel
   direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
-  channel TEXT NOT NULL CHECK (channel IN ('sms', 'call', 'email', 'vapi')),
+  message_type TEXT DEFAULT 'sms' CHECK (message_type IN ('sms', 'call', 'email', 'vapi')),
 
   -- Participants
+  phone_number TEXT,
   from_number TEXT,
   to_number TEXT,
 
   -- Content
-  body TEXT,
-  media_urls TEXT[],
+  content TEXT,
+  role TEXT CHECK (role IN ('client', 'assistant', 'system')),
+  ai_generated BOOLEAN DEFAULT FALSE,
 
   -- Status
   status TEXT DEFAULT 'sent',
+  source TEXT,
 
   -- Links
   customer_id INTEGER REFERENCES customers(id),
@@ -337,18 +412,57 @@ CREATE TABLE messages (
   openphone_message_id TEXT,
   vapi_call_id TEXT,
 
-  -- Call-specific
-  call_duration INTEGER,
-  call_recording_url TEXT,
-  call_transcript TEXT,
+  -- Extra data
+  metadata JSONB,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
 
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_messages_tenant ON messages(tenant_id);
-CREATE INDEX idx_messages_phone ON messages(tenant_id, from_number);
+CREATE INDEX idx_messages_phone ON messages(tenant_id, phone_number);
 CREATE INDEX idx_messages_customer ON messages(customer_id);
 CREATE INDEX idx_messages_created ON messages(tenant_id, created_at DESC);
+
+-- ============================================================================
+-- CALLS TABLE
+-- ============================================================================
+
+CREATE TABLE calls (
+  id SERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Call details
+  phone_number TEXT,
+  direction TEXT CHECK (direction IN ('inbound', 'outbound')),
+  provider TEXT DEFAULT 'vapi',
+  provider_call_id TEXT,
+  vapi_call_id TEXT,
+
+  -- Caller info
+  caller_name TEXT,
+
+  -- Call outcome
+  transcript TEXT,
+  duration_seconds INTEGER,
+  outcome TEXT CHECK (outcome IN ('booked', 'not_booked', 'voicemail', 'callback_scheduled', 'escalated', 'lost')),
+  status TEXT DEFAULT 'completed',
+
+  -- Links
+  customer_id INTEGER REFERENCES customers(id),
+  job_id INTEGER REFERENCES jobs(id),
+  lead_id INTEGER REFERENCES leads(id),
+
+  -- Timestamps
+  started_at TIMESTAMPTZ,
+  date TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_calls_tenant ON calls(tenant_id);
+CREATE INDEX idx_calls_phone ON calls(tenant_id, phone_number);
+CREATE INDEX idx_calls_customer ON calls(customer_id);
 
 -- ============================================================================
 -- TEAMS TABLE
@@ -360,11 +474,13 @@ CREATE TABLE teams (
 
   name TEXT NOT NULL,
   active BOOLEAN DEFAULT TRUE,
+  deleted_at TIMESTAMPTZ,                          -- Soft delete
 
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_teams_tenant ON teams(tenant_id);
+CREATE INDEX idx_teams_active ON teams(tenant_id, active) WHERE active = TRUE;
 
 -- Add foreign key to jobs now that teams exists
 ALTER TABLE jobs ADD CONSTRAINT jobs_team_fk FOREIGN KEY (team_id) REFERENCES teams(id);
@@ -380,7 +496,7 @@ CREATE TABLE team_members (
   team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   cleaner_id INTEGER NOT NULL REFERENCES cleaners(id) ON DELETE CASCADE,
 
-  role TEXT DEFAULT 'member' CHECK (role IN ('lead', 'member')),
+  role TEXT DEFAULT 'member' CHECK (role IN ('lead', 'member', 'technician')),
   is_active BOOLEAN DEFAULT TRUE,
 
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -405,7 +521,7 @@ CREATE TABLE tips (
   cleaner_id INTEGER REFERENCES cleaners(id),
 
   amount DECIMAL(10, 2) NOT NULL,
-  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api')),
+  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api', 'manual')),
   notes TEXT,
 
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -413,6 +529,7 @@ CREATE TABLE tips (
 
 CREATE INDEX idx_tips_tenant ON tips(tenant_id);
 CREATE INDEX idx_tips_job ON tips(job_id);
+CREATE INDEX idx_tips_created ON tips(tenant_id, created_at DESC);
 
 -- ============================================================================
 -- UPSELLS TABLE
@@ -428,7 +545,7 @@ CREATE TABLE upsells (
 
   upsell_type TEXT NOT NULL,
   value DECIMAL(10, 2) DEFAULT 0,
-  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api')),
+  reported_via TEXT CHECK (reported_via IN ('telegram', 'dashboard', 'api', 'manual')),
   notes TEXT,
 
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -436,6 +553,7 @@ CREATE TABLE upsells (
 
 CREATE INDEX idx_upsells_tenant ON upsells(tenant_id);
 CREATE INDEX idx_upsells_job ON upsells(job_id);
+CREATE INDEX idx_upsells_created ON upsells(tenant_id, created_at DESC);
 
 -- ============================================================================
 -- CLEANER ASSIGNMENTS TABLE
@@ -449,11 +567,11 @@ CREATE TABLE cleaner_assignments (
   cleaner_id INTEGER NOT NULL REFERENCES cleaners(id),
 
   status TEXT DEFAULT 'pending' CHECK (status IN (
-    'pending', 'confirmed', 'declined', 'cancelled'
+    'pending', 'accepted', 'confirmed', 'declined', 'cancelled'
   )),
 
   -- Assignment metadata
-  distance_km DECIMAL(10, 2),
+  distance_miles DECIMAL(10, 2),
   assigned_at TIMESTAMPTZ DEFAULT NOW(),
   responded_at TIMESTAMPTZ,
 
@@ -498,6 +616,44 @@ CREATE INDEX idx_system_events_type ON system_events(event_type);
 CREATE INDEX idx_system_events_created ON system_events(created_at DESC);
 
 -- ============================================================================
+-- SCHEDULED TASKS TABLE (Replaces QStash)
+-- ============================================================================
+
+CREATE TABLE scheduled_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+
+  -- Task identification
+  task_type TEXT NOT NULL,                         -- 'lead_followup', 'job_reminder', etc.
+  task_key TEXT,                                   -- Deduplication key (e.g., 'lead-123-stage-1')
+
+  -- Execution timing
+  scheduled_for TIMESTAMPTZ NOT NULL,              -- When to execute
+
+  -- Task payload
+  payload JSONB NOT NULL DEFAULT '{}',             -- Task-specific data
+
+  -- Execution tracking
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
+  attempts INTEGER DEFAULT 0,
+  max_attempts INTEGER DEFAULT 3,
+  last_error TEXT,
+
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  executed_at TIMESTAMPTZ,
+
+  -- Ensure unique task_key for deduplication
+  UNIQUE(task_key)
+);
+
+CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks(scheduled_for, status)
+  WHERE status = 'pending';
+CREATE INDEX idx_scheduled_tasks_tenant ON scheduled_tasks(tenant_id);
+CREATE INDEX idx_scheduled_tasks_type ON scheduled_tasks(task_type, status);
+
+-- ============================================================================
 -- HELPER FUNCTIONS
 -- ============================================================================
 
@@ -520,6 +676,9 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER tenants_updated_at BEFORE UPDATE ON tenants
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+CREATE TRIGGER users_updated_at BEFORE UPDATE ON users
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
 CREATE TRIGGER cleaners_updated_at BEFORE UPDATE ON cleaners
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
@@ -532,22 +691,14 @@ CREATE TRIGGER jobs_updated_at BEFORE UPDATE ON jobs
 CREATE TRIGGER leads_updated_at BEFORE UPDATE ON leads
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- ============================================================================
--- ROW LEVEL SECURITY (Optional - enable if using Supabase Auth)
--- ============================================================================
-
--- Uncomment these if you want RLS policies:
--- ALTER TABLE cleaners ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+CREATE TRIGGER scheduled_tasks_updated_at BEFORE UPDATE ON scheduled_tasks
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ============================================================================
 -- DONE
 -- ============================================================================
 -- Next steps:
 -- 1. Run this script in Supabase SQL Editor
--- 2. Run seed-winbros.sql to add WinBros as the first tenant
--- 3. Run add-tenant-template.sql (with modifications) for additional tenants
+-- 2. Run 03-seed-winbros.sql to add WinBros as the first tenant
+-- 3. Run 04-seed-winbros-cleaners.sql to add cleaners
 -- ============================================================================
