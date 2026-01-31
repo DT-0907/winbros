@@ -60,6 +60,12 @@ async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session) 
 
   console.log(`[Stripe Webhook] Checkout completed - job_id: ${job_id}, payment_type: ${payment_type}`)
 
+  // Handle TIP payments (may not have job verification requirement)
+  if (payment_type === 'TIP') {
+    await handleTipPayment(session)
+    return
+  }
+
   if (!job_id) {
     console.error('[Stripe Webhook] Missing job_id in session metadata')
     return
@@ -223,6 +229,61 @@ async function handleFinalPayment(jobId: string, session: Stripe.Checkout.Sessio
   })
 
   console.log(`[Stripe Webhook] FINAL payment processed successfully for job ${jobId}`)
+}
+
+/**
+ * Handle TIP payment completion
+ * - Records the tip in the database
+ * - Associates with cleaner for payout tracking
+ */
+async function handleTipPayment(session: Stripe.Checkout.Session) {
+  const metadata = session.metadata || {}
+  const { job_id, cleaner_id, tip_amount } = metadata
+
+  console.log(`[Stripe Webhook] Processing TIP payment - job_id: ${job_id}, cleaner_id: ${cleaner_id}`)
+
+  const client = getSupabaseClient()
+
+  // Get cleaner name for logging
+  let cleanerName = 'Unknown'
+  if (cleaner_id) {
+    const { data: cleaner } = await client
+      .from('cleaners')
+      .select('name')
+      .eq('id', cleaner_id)
+      .single()
+
+    if (cleaner?.name) {
+      cleanerName = cleaner.name
+    }
+  }
+
+  // Get job phone number for logging
+  let phoneNumber: string | undefined
+  if (job_id) {
+    const job = await getJobById(job_id)
+    phoneNumber = job?.phone_number
+  }
+
+  // Log the tip payment
+  await logSystemEvent({
+    source: 'stripe',
+    event_type: 'INVOICE_PAID',
+    message: `Tip of $${tip_amount || (session.amount_total ? session.amount_total / 100 : 0)} received for ${cleanerName}`,
+    job_id: job_id || undefined,
+    cleaner_id: cleaner_id || undefined,
+    phone_number: phoneNumber,
+    metadata: {
+      payment_type: 'TIP',
+      session_id: session.id,
+      amount_total: session.amount_total,
+      currency: session.currency,
+      cleaner_name: cleanerName,
+      tip_amount,
+    },
+  })
+
+  console.log(`[Stripe Webhook] TIP payment processed - $${tip_amount} for ${cleanerName}`)
 }
 
 /**
