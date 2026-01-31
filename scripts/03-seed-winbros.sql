@@ -2,7 +2,7 @@
 -- SEED WINBROS TENANT
 -- ============================================================================
 -- Run this after 01-schema.sql to add WinBros as the first tenant.
--- Dashboard login: jaspergrenager@gmail.com / test
+-- Dashboard login: winbros / test
 --
 -- IMPORTANT: Replace all {{API_KEY}} placeholders with actual values before running!
 -- ============================================================================
@@ -144,6 +144,7 @@ INSERT INTO tenants (
 -- ============================================================================
 -- CREATE DEFAULT USER FOR DASHBOARD LOGIN
 -- ============================================================================
+-- Login: username = winbros, password = test
 
 INSERT INTO users (tenant_id, username, password_hash, display_name, email)
 SELECT

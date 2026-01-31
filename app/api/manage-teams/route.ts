@@ -4,7 +4,7 @@ import { requireAuth } from "@/lib/auth"
 import { getDefaultTenant } from "@/lib/tenant"
 
 type TeamRow = { id: number; name: string; active: boolean; deleted_at?: string | null }
-type CleanerRow = { id: number; name: string; phone?: string | null; active: boolean; deleted_at?: string | null; is_team_lead?: boolean }
+type CleanerRow = { id: number; name: string; phone?: string | null; email?: string | null; telegram_id?: string | null; active: boolean; deleted_at?: string | null; is_team_lead?: boolean }
 type TeamMemberRow = { id: number; team_id: number; cleaner_id: number; role: "lead" | "technician"; is_active: boolean }
 
 function jsonError(message: string, status = 400) {
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
 
   const [teamsRes, cleanersRes, membersRes] = await Promise.all([
     client.from("teams").select("id,name,active,deleted_at").eq("tenant_id", tenant.id).is("deleted_at", null).order("created_at", { ascending: true }),
-    client.from("cleaners").select("id,name,phone,active,deleted_at,is_team_lead").eq("tenant_id", tenant.id).is("deleted_at", null).order("created_at", { ascending: true }),
+    client.from("cleaners").select("id,name,phone,email,telegram_id,active,deleted_at,is_team_lead").eq("tenant_id", tenant.id).is("deleted_at", null).order("created_at", { ascending: true }),
     client.from("team_members").select("id,team_id,cleaner_id,role,is_active").eq("tenant_id", tenant.id).order("created_at", { ascending: true }),
   ])
 
@@ -79,11 +79,48 @@ export async function POST(request: NextRequest) {
   if (action === "create_cleaner") {
     const name = String(body.name || "").trim()
     const phone = body.phone != null ? String(body.phone).trim() : null
+    const email = body.email != null ? String(body.email).trim() : null
+    const telegram_id = body.telegram_id != null ? String(body.telegram_id).trim() : null
+    const is_team_lead = Boolean(body.is_team_lead)
+
     if (!name) return jsonError("Cleaner name is required")
+
     const { data, error } = await client
       .from("cleaners")
-      .insert({ tenant_id: tenant.id, name, phone: phone || null, active: true })
-      .select("id,name,phone,active,deleted_at")
+      .insert({
+        tenant_id: tenant.id,
+        name,
+        phone: phone || null,
+        email: email || null,
+        telegram_id: telegram_id || null,
+        is_team_lead,
+        active: true
+      })
+      .select("id,name,phone,email,telegram_id,is_team_lead,active,deleted_at")
+      .single()
+    if (error) return jsonError(error.message, 500)
+    return NextResponse.json({ success: true, data })
+  }
+
+  if (action === "update_cleaner") {
+    const cleaner_id = Number(body.cleaner_id)
+    if (!Number.isFinite(cleaner_id)) return jsonError("cleaner_id is required")
+
+    const updates: Record<string, unknown> = {}
+    if (body.name != null) updates.name = String(body.name).trim()
+    if (body.phone != null) updates.phone = String(body.phone).trim() || null
+    if (body.email != null) updates.email = String(body.email).trim() || null
+    if (body.telegram_id != null) updates.telegram_id = String(body.telegram_id).trim() || null
+    if (body.is_team_lead != null) updates.is_team_lead = Boolean(body.is_team_lead)
+
+    if (Object.keys(updates).length === 0) return jsonError("No updates provided")
+
+    const { data, error } = await client
+      .from("cleaners")
+      .update(updates)
+      .eq("tenant_id", tenant.id)
+      .eq("id", cleaner_id)
+      .select("id,name,phone,email,telegram_id,is_team_lead,active,deleted_at")
       .single()
     if (error) return jsonError(error.message, 500)
     return NextResponse.json({ success: true, data })
