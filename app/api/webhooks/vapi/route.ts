@@ -15,6 +15,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Invalid JSON" }, { status: 400 })
   }
 
+  // VAPI sends different message types - only process end-of-call-report
+  const messageType = payload?.message?.type || payload?.type
+
+  // Ignore real-time transcript updates, function calls, status updates, etc.
+  if (messageType && messageType !== "end-of-call-report") {
+    console.log(`[VAPI Webhook] Ignoring message type: ${messageType}`)
+    return NextResponse.json({ success: true, ignored: true, reason: `message type: ${messageType}` })
+  }
+
   const data = extractVapiCallData(payload)
   if (!data) {
     return NextResponse.json({ success: true, ignored: true })
