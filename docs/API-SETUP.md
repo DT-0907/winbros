@@ -14,6 +14,24 @@ Complete guide for configuring all APIs, webhooks, and integrations for the WinB
 
 ---
 
+## Required vs Optional Services
+
+| Service | Required | Purpose |
+|---------|----------|---------|
+| Supabase | **Yes** | Database |
+| OpenPhone | **Yes** | SMS/calls with customers |
+| VAPI | **Yes** | AI phone calls |
+| HousecallPro | **Yes** | Job management |
+| Stripe | **Yes** | Payments |
+| Telegram | **Yes** | Cleaner notifications |
+| Anthropic AI | **Yes** | Intent analysis |
+| QStash | Optional | Delayed task scheduling (lead follow-up timing) |
+| Gmail | Optional | Email confirmations to customers |
+| GoHighLevel | Optional | CRM integration |
+| Wave | Optional | Professional invoicing |
+
+---
+
 ## Environment Variables (Global)
 
 These are configured in `.env.local` (local) or Vercel Environment Variables (production).
