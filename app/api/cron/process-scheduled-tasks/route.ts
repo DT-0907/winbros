@@ -21,6 +21,8 @@ import { triggerCleanerAssignment } from '@/lib/cleaner-assignment'
 import { sendSMS } from '@/lib/openphone'
 import { initiateOutboundCall } from '@/lib/vapi'
 import { logSystemEvent } from '@/lib/system-events'
+import { getSupabaseClient } from '@/lib/supabase'
+import { createDepositPaymentLink, calculateJobEstimate } from '@/lib/stripe-client'
 
 // Verify cron authorization
 function verifyCronAuth(request: NextRequest): boolean {
@@ -165,18 +167,161 @@ async function processLeadFollowup(
 
   console.log(`[lead-followup] Processing stage ${stage} (${action}) for lead ${leadId}`)
 
-  // Get tenant-specific config
-  const tenantConfig = tenant?.workflow_config as Record<string, unknown> | undefined
+  const client = getSupabaseClient()
   const businessName = tenant?.business_name_short || tenant?.name || 'Our team'
 
-  if (action === 'text') {
-    // Send SMS
-    const message =
-      stage === 1
-        ? `Hi ${leadName}! Thanks for reaching out to ${businessName}. We'd love to help with your cleaning needs. When would be a good time to chat?`
-        : `Hi ${leadName}, just following up! Let us know if you have any questions about our services. We're here to help!`
+  // Check if lead has already converted (responded, booked, etc.)
+  const { data: lead } = await client
+    .from('leads')
+    .select('*, customers(*)')
+    .eq('id', leadId)
+    .single()
 
-    await sendSMS(leadPhone, message)
+  if (!lead) {
+    console.log(`[lead-followup] Lead ${leadId} not found, skipping`)
+    return
+  }
+
+  // Skip follow-up if lead has been contacted recently (within 5 minutes)
+  // This prevents follow-up if customer has already responded
+  if (lead.last_contact_at) {
+    const lastContact = new Date(lead.last_contact_at)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+    if (lastContact > fiveMinutesAgo && stage > 1) {
+      console.log(`[lead-followup] Lead ${leadId} contacted recently, skipping stage ${stage}`)
+      return
+    }
+  }
+
+  // Skip if lead is already booked or lost
+  if (lead.status === 'booked' || lead.status === 'lost' || lead.status === 'unqualified') {
+    console.log(`[lead-followup] Lead ${leadId} status is ${lead.status}, skipping follow-up`)
+    return
+  }
+
+  if (action === 'text') {
+    let message: string
+
+    if (stage === 1) {
+      // Initial greeting
+      message = `Hi ${leadName}! Thanks for reaching out to ${businessName}. We'd love to help with your cleaning needs. Can you share your address and number of bedrooms/bathrooms so we can give you an instant quote?`
+    } else if (stage === 4) {
+      // Second follow-up text
+      message = `Hi ${leadName}, just checking in! We have openings this week for cleaning services. Reply with your home details (beds/baths/sqft) and we'll send you pricing right away!`
+    } else if (stage === 5) {
+      // Final stage - try to create a quote and send payment link
+      const formData = lead.form_data as Record<string, unknown> | null
+      const extractedInfo = formData?.extracted_info as Record<string, unknown> | null
+      const intentAnalysis = formData?.intent_analysis as Record<string, unknown> | null
+
+      // Try to get property details from form data
+      const intentExtractedInfo = intentAnalysis?.extractedInfo as Record<string, unknown> | null
+      const bedrooms = extractedInfo?.bedrooms || intentExtractedInfo?.bedrooms
+      const bathrooms = extractedInfo?.bathrooms || intentExtractedInfo?.bathrooms
+      const serviceType = extractedInfo?.serviceType || intentExtractedInfo?.serviceType || 'Standard cleaning'
+      const address = extractedInfo?.address || intentExtractedInfo?.address || lead.customers?.address
+
+      if (bedrooms && bathrooms) {
+        // We have enough info to generate a quote
+        try {
+          const estimate = calculateJobEstimate({
+            service_type: String(serviceType),
+            notes: '',
+          }, {
+            bedrooms: Number(bedrooms),
+            bathrooms: Number(bathrooms),
+          })
+
+          // Create a job from the lead
+          const { data: job, error: jobErr } = await client
+            .from('jobs')
+            .insert({
+              tenant_id: tenant?.id,
+              customer_id: lead.customer_id,
+              phone_number: leadPhone,
+              address: address || null,
+              service_type: String(serviceType),
+              price: estimate.totalPrice,
+              hours: estimate.totalHours,
+              cleaners: estimate.cleaners,
+              status: 'pending',
+              booked: false,
+              paid: false,
+              payment_status: 'pending',
+              notes: `Created from lead follow-up. Original inquiry: ${formData?.original_message || 'N/A'}`,
+            })
+            .select('id')
+            .single()
+
+          if (jobErr || !job) {
+            console.error(`[lead-followup] Failed to create job from lead:`, jobErr?.message)
+            message = `Hi ${leadName}, last chance to book your cleaning with ${businessName}! We have limited availability this week. Reply "BOOK" to secure your spot or call us to discuss your needs.`
+          } else {
+            // Update lead with job reference
+            await client
+              .from('leads')
+              .update({
+                converted_to_job_id: job.id,
+                status: 'qualified',
+              })
+              .eq('id', leadId)
+
+            // Create Stripe payment link
+            const customer = lead.customers || { email: null, phone_number: leadPhone }
+
+            if (customer.email) {
+              const paymentResult = await createDepositPaymentLink(
+                customer,
+                { id: String(job.id), price: estimate.totalPrice, phone_number: leadPhone, service_type: String(serviceType) } as any
+              )
+
+              if (paymentResult.success && paymentResult.url) {
+                // Update job with payment link
+                await client
+                  .from('jobs')
+                  .update({ stripe_payment_link: paymentResult.url })
+                  .eq('id', job.id)
+
+                // Update lead with payment link
+                await client
+                  .from('leads')
+                  .update({ stripe_payment_link: paymentResult.url })
+                  .eq('id', leadId)
+
+                const depositAmount = paymentResult.amount?.toFixed(2) || (estimate.totalPrice / 2 * 1.03).toFixed(2)
+                message = `Hi ${leadName}! Your ${serviceType} quote is ready: $${estimate.totalPrice}. Pay just $${depositAmount} deposit to confirm your booking: ${paymentResult.url}`
+
+                await logSystemEvent({
+                  source: 'scheduler',
+                  event_type: 'PAYMENT_LINK_SENT',
+                  message: `Stripe payment link sent to ${leadPhone} for $${estimate.totalPrice}`,
+                  phone_number: leadPhone,
+                  metadata: { leadId, jobId: job.id, amount: estimate.totalPrice, paymentUrl: paymentResult.url },
+                })
+              } else {
+                message = `Hi ${leadName}! Your ${serviceType} quote is $${estimate.totalPrice}. We need your email to send the payment link. Reply with your email or call us to book!`
+              }
+            } else {
+              message = `Hi ${leadName}! Your ${serviceType} quote is $${estimate.totalPrice}. Reply with your email address and we'll send you a secure payment link to confirm your booking!`
+            }
+          }
+        } catch (err) {
+          console.error(`[lead-followup] Error creating quote:`, err)
+          message = `Hi ${leadName}, last chance to book your cleaning with ${businessName}! We have limited availability this week. Reply "BOOK" to secure your spot or call us to discuss your needs.`
+        }
+      } else {
+        // Don't have enough info for a quote, send generic final message
+        message = `Hi ${leadName}, last chance to book your cleaning with ${businessName}! We have limited availability this week. Reply with your address and beds/baths for an instant quote, or call us directly!`
+      }
+    } else {
+      message = `Hi ${leadName}, just following up from ${businessName}! Let us know if you have any questions about our cleaning services. We're here to help!`
+    }
+
+    if (tenant) {
+      await sendSMS(tenant, leadPhone, message)
+    } else {
+      await sendSMS(leadPhone, message)
+    }
   } else if (action === 'call' || action === 'double_call') {
     // Initiate VAPI call
     const assistantId = tenant?.vapi_assistant_id || process.env.VAPI_ASSISTANT_ID
@@ -196,6 +341,12 @@ async function processLeadFollowup(
       }
     }
   }
+
+  // Update lead's followup_stage
+  await client
+    .from('leads')
+    .update({ followup_stage: stage })
+    .eq('id', leadId)
 
   // Log the event
   await logSystemEvent({
@@ -229,10 +380,11 @@ async function processJobBroadcast(
     // Escalate to owner
     const ownerPhone = tenant?.owner_phone || process.env.OWNER_PHONE
     if (ownerPhone) {
-      await sendSMS(
-        ownerPhone,
-        `URGENT: Job ${jobId} needs manual assignment. All cleaners are unavailable.`
-      )
+      if (tenant) {
+        await sendSMS(tenant, ownerPhone, `URGENT: Job ${jobId} needs manual assignment. All cleaners are unavailable.`)
+      } else {
+        await sendSMS(ownerPhone, `URGENT: Job ${jobId} needs manual assignment. All cleaners are unavailable.`)
+      }
     }
   }
 }
@@ -257,7 +409,11 @@ async function processDayBeforeReminder(
 
   const message = `Hi ${customerName}! This is a reminder that your cleaning with ${businessName} is scheduled for tomorrow. Please ensure we have access to your home. Reply with any questions!`
 
-  await sendSMS(customerPhone, message)
+  if (tenant) {
+    await sendSMS(tenant, customerPhone, message)
+  } else {
+    await sendSMS(customerPhone, message)
+  }
 }
 
 /**

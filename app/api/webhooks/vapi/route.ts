@@ -15,6 +15,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Invalid JSON" }, { status: 400 })
   }
 
+  // Log incoming webhook for debugging
+  console.log(`[VAPI Webhook] Received webhook:`, JSON.stringify({
+    type: payload?.type,
+    messageType: payload?.message?.type,
+    callId: payload?.call?.id || payload?.message?.call?.id,
+    hasTranscript: !!(payload?.message?.transcript || payload?.message?.artifact?.transcript),
+  }))
+
   // VAPI sends different message types - only process end-of-call-report
   const messageType = payload?.message?.type || payload?.type
 
@@ -47,23 +55,39 @@ export async function POST(request: NextRequest) {
   const providerCallId = data.callId || null
   const nowIso = new Date().toISOString()
 
+  // Determine call direction from VAPI payload
+  // VAPI includes call type in the message or call object
+  const message = (payload.message as Record<string, unknown>) || payload
+  const call = (message.call as Record<string, unknown>) || (payload.call as Record<string, unknown>) || message
+  const callType = (call.type as string) || (message.type as string) || ""
+  const metadata = (call.metadata as Record<string, unknown>) || (message.metadata as Record<string, unknown>) || {}
+
+  // Outbound calls have type "outboundPhoneCall" or have leadId in metadata (from our follow-up system)
+  const isOutbound =
+    callType.toLowerCase().includes("outbound") ||
+    !!metadata.leadId ||
+    !!metadata.tenantSlug // Our outbound calls include tenantSlug in metadata
+
+  const direction = isOutbound ? "outbound" : "inbound"
+  console.log(`[VAPI Webhook] Call direction detected: ${direction} (callType: ${callType}, hasLeadId: ${!!metadata.leadId})`)
+
   // Insert call row
   const { error: callErr } = await client.from("calls").insert({
     tenant_id: tenant?.id,
     customer_id: customerId,
     phone_number: phone,
-    direction: "inbound",
+    direction: direction,
     provider: "vapi",
     provider_call_id: providerCallId,
     vapi_call_id: providerCallId,
     transcript: data.transcript || null,
-    audio_url: data.audioUrl || null,
     duration_seconds: data.duration ? Math.round(Number(data.duration)) : null,
     outcome: data.outcome || null,
     status: "completed",
     started_at: nowIso,
     date: nowIso,
     created_at: nowIso,
+    lead_id: metadata.leadId ? Number(metadata.leadId) : null,
   })
 
   if (callErr) {

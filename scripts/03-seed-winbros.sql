@@ -102,7 +102,7 @@ INSERT INTO tenants (
 
   -- Telegram (get from BotFather)
   '{{TELEGRAM_BOT_TOKEN}}',
-  '{{OWNER_TELEGRAM_CHAT_ID}}',
+  '{{TELEGRAM_CHAT_ID}}',  -- Owner chat ID
 
   -- Wave (get from Wave Dashboard -> Integrations)
   '{{WAVE_API_TOKEN}}',
