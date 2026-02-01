@@ -29,12 +29,21 @@ export async function POST(request: NextRequest) {
 
   const extracted = extractMessageFromOpenPhonePayload(payload)
   if (!extracted) {
-    return NextResponse.json({ success: true, ignored: true })
+    return NextResponse.json({ success: true, ignored: true, reason: "could not extract message" })
   }
 
+  // Determine direction from extracted data OR from webhook event type
+  // OpenPhone event types: "message.received" (inbound), "message.sent" (outbound)
+  const eventType = payload?.type || payload?.event
+  const isInbound =
+    extracted.direction === "inbound" ||
+    extracted.direction === "incoming" ||
+    eventType === "message.received" ||
+    eventType === "message.created" // Some versions use this
+
   // Only process inbound messages
-  if (extracted.direction !== "inbound") {
-    return NextResponse.json({ success: true, ignored: true, reason: "outbound message" })
+  if (!isInbound) {
+    return NextResponse.json({ success: true, ignored: true, reason: `outbound message (direction: ${extracted.direction}, event: ${eventType})` })
   }
 
   const fromE164 = normalizePhoneNumber(extracted.from) || extracted.from
