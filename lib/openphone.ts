@@ -239,21 +239,21 @@ export function extractMessageFromOpenPhonePayload(
     message.sender,
     message.phoneNumber,
     message.phone_number,
-    data.from,
-    data.sender,
-    data.phoneNumber,
-    data.phone_number
+    dataWrapper.from,
+    dataWrapper.sender,
+    dataWrapper.phoneNumber,
+    dataWrapper.phone_number
   )
 
   const createdAt = firstString(
     message.createdAt,
     message.created_at,
     message.timestamp,
-    data.createdAt,
-    data.timestamp
+    dataWrapper.createdAt,
+    dataWrapper.timestamp
   ) || new Date().toISOString()
 
-  const rawDirection = firstString(message.direction, data.direction, body.direction)
+  const rawDirection = firstString(message.direction, dataWrapper.direction, body.direction)
 
   // Normalize direction: OpenPhone uses "incoming"/"outgoing", we use "inbound"/"outbound"
   let direction: string | undefined

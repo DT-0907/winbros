@@ -29,8 +29,8 @@ INSERT INTO cleaners (
 SELECT
   id,
   'Delbert Tran',
-  '{{DELBERT_PHONE}}',
-  '{{DELBERT_TELEGRAM_ID}}',
+  '+16197232278',
+  '8521488394',
   true,  -- Team lead
   true
 FROM tenants

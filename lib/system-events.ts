@@ -95,6 +95,7 @@ export type SystemEventType =
   // SMS/OpenPhone Events
   | 'SMS_INTENT_ANALYZED'
   | 'LEAD_CREATED_FROM_SMS'
+  | 'AUTO_RESPONSE_SENT'
   // Post-job automation
   | 'POST_JOB_FOLLOWUP_SENT'
   | 'MONTHLY_REENGAGEMENT_SENT'

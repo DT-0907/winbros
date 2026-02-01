@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
-import { extractMessageFromOpenPhonePayload, normalizePhoneNumber, validateOpenPhoneWebhook } from "@/lib/openphone"
+import { extractMessageFromOpenPhonePayload, normalizePhoneNumber, validateOpenPhoneWebhook, sendSMS } from "@/lib/openphone"
 import { getSupabaseClient } from "@/lib/supabase"
 import { analyzeBookingIntent, isObviouslyNotBooking } from "@/lib/ai-intent"
+import { generateAutoResponse } from "@/lib/auto-response"
 import { createLeadInHCP } from "@/lib/housecall-pro-api"
 import { scheduleLeadFollowUp } from "@/lib/scheduler"
 import { logSystemEvent } from "@/lib/system-events"
@@ -94,6 +95,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, intentAnalysis: "skipped" })
   }
 
+  // Get recent conversation history for context (needed for auto-response)
+  const { data: recentMessages } = await client
+    .from("messages")
+    .select("role, content")
+    .eq("phone_number", phone)
+    .order("timestamp", { ascending: false })
+    .limit(5)
+
+  const conversationHistory = recentMessages?.reverse().map(m => ({
+    role: m.role as 'client' | 'business',
+    content: m.content
+  })) || []
+
   // Check if a lead already exists for this phone (that's still active)
   const { data: existingLead } = await client
     .from("leads")
@@ -110,21 +124,51 @@ export async function POST(request: NextRequest) {
       .eq("id", existingLead.id)
 
     console.log(`[OpenPhone] Lead already exists for ${phone}, updated last_contact_at`)
-    return NextResponse.json({ success: true, existingLeadId: existingLead.id })
+
+    // Still send auto-response even for existing leads
+    try {
+      // Run quick intent analysis for context
+      const quickIntent = await analyzeBookingIntent(messageContent, conversationHistory)
+
+      const autoResponse = await generateAutoResponse(
+        messageContent,
+        quickIntent,
+        tenant,
+        conversationHistory
+      )
+
+      if (autoResponse.shouldSend && autoResponse.response) {
+        console.log(`[OpenPhone] Sending auto-response to existing lead: "${autoResponse.response.slice(0, 50)}..."`)
+
+        const sendResult = await sendSMS(tenant!, phone, autoResponse.response)
+
+        if (sendResult.success) {
+          await client.from("messages").insert({
+            tenant_id: tenant?.id,
+            customer_id: customer.id,
+            phone_number: phone,
+            role: "business",
+            content: autoResponse.response,
+            direction: "outbound",
+            message_type: "sms",
+            ai_generated: true,
+            timestamp: new Date().toISOString(),
+            source: "openphone",
+            metadata: {
+              auto_response: true,
+              existing_lead_id: existingLead.id,
+              reason: autoResponse.reason,
+              openphone_message_id: sendResult.messageId,
+            },
+          })
+        }
+      }
+    } catch (err) {
+      console.error("[OpenPhone] Auto-response error for existing lead:", err)
+    }
+
+    return NextResponse.json({ success: true, existingLeadId: existingLead.id, autoResponseSent: true })
   }
-
-  // Get recent conversation history for context
-  const { data: recentMessages } = await client
-    .from("messages")
-    .select("role, content")
-    .eq("phone_number", phone)
-    .order("timestamp", { ascending: false })
-    .limit(5)
-
-  const conversationHistory = recentMessages?.reverse().map(m => ({
-    role: m.role as 'client' | 'business',
-    content: m.content
-  })) || []
 
   // Run AI intent analysis
   console.log(`[OpenPhone] Analyzing booking intent for: "${messageContent}"`)
@@ -143,6 +187,69 @@ export async function POST(request: NextRequest) {
       intent_result: intentResult,
     },
   })
+
+  // ============================================
+  // Auto-Response: Send immediate AI-powered reply
+  // ============================================
+  try {
+    console.log(`[OpenPhone] Generating auto-response for: "${messageContent}"`)
+
+    const autoResponse = await generateAutoResponse(
+      messageContent,
+      intentResult,
+      tenant,
+      conversationHistory
+    )
+
+    if (autoResponse.shouldSend && autoResponse.response) {
+      console.log(`[OpenPhone] Sending auto-response: "${autoResponse.response.slice(0, 50)}..."`)
+
+      const sendResult = await sendSMS(tenant!, phone, autoResponse.response)
+
+      if (sendResult.success) {
+        // Store the outgoing auto-response message
+        await client.from("messages").insert({
+          tenant_id: tenant?.id,
+          customer_id: customer.id,
+          phone_number: phone,
+          role: "business",
+          content: autoResponse.response,
+          direction: "outbound",
+          message_type: "sms",
+          ai_generated: true,
+          timestamp: new Date().toISOString(),
+          source: "openphone",
+          metadata: {
+            auto_response: true,
+            reason: autoResponse.reason,
+            intent_analysis: intentResult,
+            openphone_message_id: sendResult.messageId,
+          },
+        })
+
+        console.log(`[OpenPhone] Auto-response sent successfully: ${sendResult.messageId}`)
+
+        await logSystemEvent({
+          source: "openphone",
+          event_type: "AUTO_RESPONSE_SENT",
+          message: `Auto-response sent to ${phone}: "${autoResponse.response.slice(0, 50)}..."`,
+          phone_number: phone,
+          metadata: {
+            response: autoResponse.response,
+            reason: autoResponse.reason,
+            message_id: sendResult.messageId,
+          },
+        })
+      } else {
+        console.error(`[OpenPhone] Failed to send auto-response:`, sendResult.error)
+      }
+    } else {
+      console.log(`[OpenPhone] Auto-response skipped: ${autoResponse.reason}`)
+    }
+  } catch (autoResponseErr) {
+    console.error("[OpenPhone] Auto-response error:", autoResponseErr)
+    // Don't fail the webhook, just log the error
+  }
 
   // If booking intent detected, create lead and trigger follow-up
   if (intentResult.hasBookingIntent && (intentResult.confidence === 'high' || intentResult.confidence === 'medium')) {

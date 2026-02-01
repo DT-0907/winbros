@@ -92,7 +92,7 @@ INSERT INTO tenants (
   '{{HOUSECALL_PRO_COMPANY_ID}}',
   '{{HOUSECALL_PRO_WEBHOOK_SECRET}}',
 
-  -- Stripe (get from Stripe Dashboard -> Developers -> API Keys)
+  -- Stripe (TEST MODE - get from Stripe Dashboard -> Developers -> API Keys)
   '{{STRIPE_SECRET_KEY}}',
   '{{STRIPE_WEBHOOK_SECRET}}',
 

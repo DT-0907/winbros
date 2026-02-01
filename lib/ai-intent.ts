@@ -252,16 +252,18 @@ function analyzeWithKeywords(message: string): IntentAnalysis {
 /**
  * Quick check for obvious non-booking messages
  * Use this before calling the full AI analysis to save API calls
+ * NOTE: Be conservative - "yes", "no", "sure" could be responses to follow-up questions
  */
 export function isObviouslyNotBooking(message: string): boolean {
   const lowerMessage = message.toLowerCase().trim()
 
   // Very short messages with no content
-  if (lowerMessage.length < 3) return true
+  if (lowerMessage.length < 2) return true
 
-  // Single word responses that aren't booking-related
-  const nonBookingSingleWords = ['ok', 'k', 'yes', 'no', 'thanks', 'thx', 'ty', 'cool', 'great', 'sure', 'okay']
-  if (nonBookingSingleWords.includes(lowerMessage)) return true
+  // Only skip truly meaningless acknowledgments
+  // NOTE: Don't skip "yes", "no", "sure" - these could be responses to our questions!
+  const meaninglessAcknowledgments = ['ok', 'k', 'kk', 'thanks', 'thx', 'ty', 'cool', 'great', 'okay', 'np', 'got it']
+  if (meaninglessAcknowledgments.includes(lowerMessage)) return true
 
   // Obvious opt-outs
   if (lowerMessage === 'stop' || lowerMessage === 'unsubscribe') return true
