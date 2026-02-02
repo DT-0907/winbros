@@ -68,7 +68,7 @@ INSERT INTO tenants (
   -- Basic Info
   'WinBros Cleaning',
   'winbros',
-  'jaspergrenager@gmail.com',
+  '{{ADMIN_EMAIL}}',
   crypt('test', gen_salt('bf')),
 
   -- Business Info
@@ -88,9 +88,9 @@ INSERT INTO tenants (
   '{{VAPI_PHONE_ID}}',
 
   -- HousecallPro (get from HCP Dashboard -> Integrations -> API)
-  '{{HOUSECALL_PRO_API_KEY}}',
-  '{{HOUSECALL_PRO_COMPANY_ID}}',
-  '{{HOUSECALL_PRO_WEBHOOK_SECRET}}',
+  '{{HCP_API_KEY}}',
+  '{{HCP_COMPANY_ID}}',
+  '{{HCP_WEBHOOK_SECRET}}',
 
   -- Stripe (TEST MODE - get from Stripe Dashboard -> Developers -> API Keys)
   '{{STRIPE_SECRET_KEY}}',
@@ -136,8 +136,8 @@ INSERT INTO tenants (
   }'::jsonb,
 
   -- Owner Contact
-  '+14242755847',
-  'jaspergrenager@gmail.com',
+  '{{OWNER_PHONE}}',
+  '{{OWNER_EMAIL}}',
   NULL
 );
 
@@ -152,7 +152,7 @@ SELECT
   'winbros',
   crypt('test', gen_salt('bf')),
   'WinBros Admin',
-  'jaspergrenager@gmail.com'
+  '{{ADMIN_EMAIL}}'
 FROM tenants
 WHERE slug = 'winbros';
 

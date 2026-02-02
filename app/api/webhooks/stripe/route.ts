@@ -166,10 +166,27 @@ async function handleDepositPayment(
   }
 
   // Trigger cleaner assignment
+  console.log(`[Stripe Webhook] Triggering cleaner assignment for job ${jobId}`)
+  console.log(`[Stripe Webhook] Job details - date: ${updatedJob.date}, scheduled_at: ${updatedJob.scheduled_at}, address: ${updatedJob.address}`)
   const assignmentResult = await triggerCleanerAssignment(jobId)
 
   if (!assignmentResult.success) {
     console.error(`[Stripe Webhook] Cleaner assignment failed: ${assignmentResult.error}`)
+    // Log this as a system event for dashboard visibility
+    await logSystemEvent({
+      source: 'stripe',
+      event_type: 'CLEANER_NOTIFICATION_FAILED',
+      message: `Cleaner assignment failed for job ${jobId}: ${assignmentResult.error}`,
+      job_id: jobId,
+      phone_number: updatedJob.phone_number,
+      metadata: {
+        error: assignmentResult.error,
+        job_date: updatedJob.date,
+        job_scheduled_at: updatedJob.scheduled_at,
+      },
+    })
+  } else {
+    console.log(`[Stripe Webhook] Cleaner assignment triggered successfully for job ${jobId}`)
   }
 
   // Log the system event

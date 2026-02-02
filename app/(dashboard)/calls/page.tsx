@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Phone, Clock, Search } from "lucide-react"
+import { Phone, Clock, Search, ChevronDown, ChevronUp } from "lucide-react"
 import type { Call, PaginatedResponse } from "@/lib/types"
 
 function formatDuration(seconds?: number) {
@@ -19,6 +19,7 @@ export default function CallsPage() {
   const [calls, setCalls] = useState<Call[]>([])
   const [loading, setLoading] = useState(false)
   const [phone, setPhone] = useState("")
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null)
 
   async function load() {
     setLoading(true)
@@ -39,6 +40,10 @@ export default function CallsPage() {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  function toggleExpand(callId: string) {
+    setExpandedCallId(expandedCallId === callId ? null : callId)
+  }
 
   return (
     <div className="space-y-6">
@@ -72,34 +77,73 @@ export default function CallsPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {calls.map((c) => (
-              <div key={c.id} className="rounded-lg border border-border bg-muted/30 p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Phone className="h-4 w-4 text-muted-foreground" />
-                      <span className="font-medium text-foreground">{c.caller_name || c.caller_phone || "Unknown"}</span>
-                      <Badge variant="outline">{c.call_type}</Badge>
-                      <Badge variant="secondary">{c.handler}</Badge>
-                      {c.outcome && <Badge variant="outline">{c.outcome}</Badge>}
-                      {!c.is_business_hours && <Badge variant="destructive">after-hours</Badge>}
-                    </div>
-                    <p className="text-sm text-muted-foreground">{c.caller_phone}</p>
-                    {c.transcript && (
-                      <p className="text-sm text-muted-foreground line-clamp-2">{c.transcript}</p>
-                    )}
-                  </div>
+            {calls.map((c) => {
+              const isExpanded = expandedCallId === c.id
+              const hasTranscript = c.transcript && c.transcript.length > 0
 
-                  <div className="text-right text-sm text-muted-foreground">
-                    <div className="flex items-center justify-end gap-1">
-                      <Clock className="h-4 w-4" />
-                      <span>{formatDuration(c.duration_seconds)}</span>
+              return (
+                <div key={c.id} className="rounded-lg border border-border bg-muted/30 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Phone className="h-4 w-4 text-muted-foreground" />
+                        <span className="font-medium text-foreground">{c.caller_name || c.caller_phone || "Unknown"}</span>
+                        <Badge variant="outline">{c.call_type}</Badge>
+                        <Badge variant="secondary">{c.handler}</Badge>
+                        {c.outcome && <Badge variant="outline">{c.outcome}</Badge>}
+                        {!c.is_business_hours && <Badge variant="destructive">after-hours</Badge>}
+                      </div>
+                      <p className="text-sm text-muted-foreground">{c.caller_phone}</p>
+
+                      {/* Preview of transcript (when not expanded) */}
+                      {hasTranscript && !isExpanded && (
+                        <p className="text-sm text-muted-foreground line-clamp-2">{c.transcript}</p>
+                      )}
+
+                      {/* Full transcript (when expanded) */}
+                      {hasTranscript && isExpanded && (
+                        <div className="mt-3 p-3 bg-muted/50 rounded-lg border border-border">
+                          <div className="text-xs font-medium text-muted-foreground mb-2">Full Transcript:</div>
+                          <div className="text-sm text-foreground whitespace-pre-wrap max-h-96 overflow-y-auto">
+                            {c.transcript}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div>{new Date(c.created_at).toLocaleString()}</div>
+
+                    <div className="text-right text-sm text-muted-foreground flex flex-col items-end gap-2">
+                      <div className="flex items-center justify-end gap-1">
+                        <Clock className="h-4 w-4" />
+                        <span>{formatDuration(c.duration_seconds)}</span>
+                      </div>
+                      <div>{new Date(c.created_at).toLocaleString()}</div>
+
+                      {/* Expand button */}
+                      {hasTranscript && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => toggleExpand(c.id)}
+                          className="gap-1 text-xs"
+                        >
+                          {isExpanded ? (
+                            <>
+                              <ChevronUp className="h-3 w-3" />
+                              Collapse
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-3 w-3" />
+                              View Transcript
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
 
             {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
             {!loading && calls.length === 0 && (
@@ -111,4 +155,3 @@ export default function CallsPage() {
     </div>
   )
 }
-

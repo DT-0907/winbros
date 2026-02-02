@@ -232,6 +232,26 @@ async function processLeadFollowup(
             bathrooms: Number(bathrooms),
           })
 
+          // Extract date from lead's form data (various possible field names)
+          const requestedDate = extractedInfo?.requestedDate ||
+            intentExtractedInfo?.requestedDate ||
+            extractedInfo?.date ||
+            intentExtractedInfo?.date ||
+            formData?.requested_date ||
+            formData?.date ||
+            null
+
+          // Extract time from lead's form data
+          const requestedTime = extractedInfo?.requestedTime ||
+            intentExtractedInfo?.requestedTime ||
+            extractedInfo?.time ||
+            intentExtractedInfo?.time ||
+            formData?.requested_time ||
+            formData?.time ||
+            null
+
+          console.log(`[lead-followup] Creating job with date: ${requestedDate}, time: ${requestedTime}`)
+
           // Create a job from the lead
           const { data: job, error: jobErr } = await client
             .from('jobs')
@@ -248,6 +268,8 @@ async function processLeadFollowup(
               booked: false,
               paid: false,
               payment_status: 'pending',
+              date: requestedDate ? String(requestedDate) : null,
+              scheduled_at: requestedTime ? String(requestedTime) : null,
               notes: `Created from lead follow-up. Original inquiry: ${formData?.original_message || 'N/A'}`,
             })
             .select('id')

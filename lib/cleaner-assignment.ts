@@ -180,8 +180,23 @@ export async function assignNextAvailableCleaner(
 
   // Check if job has required fields
   if (!job.date) {
-    console.error(`[cleaner-assignment] Job ${jobId} has no date`)
-    return { success: false }
+    console.error(`[cleaner-assignment] Job ${jobId} has no date - cannot determine cleaner availability`)
+
+    // Log as system event for dashboard visibility
+    await logSystemEvent({
+      source: 'telegram',
+      event_type: 'CLEANER_NOTIFICATION_FAILED',
+      message: `Cannot assign cleaner: Job ${jobId} has no scheduled date`,
+      job_id: jobId,
+      phone_number: job.phone_number,
+      metadata: {
+        reason: 'missing_job_date',
+        job_status: job.status,
+        job_address: job.address,
+      },
+    })
+
+    return { success: false, error: 'Job has no scheduled date' }
   }
 
   // Get existing assignments to see who's already been contacted
@@ -197,15 +212,27 @@ export async function assignNextAvailableCleaner(
   ])
 
   // Get all available cleaners for this job's date/time
+  console.log(`[cleaner-assignment] Fetching cleaners for date: ${job.date}, time: ${job.scheduled_at || 'any'}`)
   const availableCleaners = (await getCleanerAvailability(
     job.date,
     job.scheduled_at || undefined
   )) as CleanerWithLocation[]
 
+  console.log(`[cleaner-assignment] Found ${availableCleaners.length} available cleaners:`,
+    availableCleaners.map(c => ({
+      id: c.id,
+      name: c.name,
+      active: c.active,
+      telegram_id: c.telegram_id
+    }))
+  )
+
   // Filter out excluded cleaners
   const eligibleCleaners = availableCleaners.filter(
     (c) => c.id && !excludeSet.has(c.id)
   )
+
+  console.log(`[cleaner-assignment] After excluding ${excludeSet.size} cleaners, ${eligibleCleaners.length} eligible`)
 
   if (eligibleCleaners.length === 0) {
     console.log(
@@ -309,14 +336,20 @@ export async function triggerCleanerAssignment(
   jobId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    console.log(`[cleaner-assignment] Starting assignment for job ${jobId}`)
+
     // Get the job details
     const job = await getJobById(jobId)
     if (!job) {
+      console.error(`[cleaner-assignment] Job not found: ${jobId}`)
       return { success: false, error: `Job not found: ${jobId}` }
     }
 
+    console.log(`[cleaner-assignment] Job found - status: ${job.status}, date: ${job.date}, address: ${job.address}`)
+
     // Check if job is in a valid state for assignment
     if (job.status === 'completed' || job.status === 'cancelled') {
+      console.error(`[cleaner-assignment] Job ${jobId} is ${job.status}, cannot assign`)
       return {
         success: false,
         error: `Job ${jobId} is ${job.status}, cannot assign cleaner`,
@@ -376,6 +409,7 @@ export async function triggerCleanerAssignment(
 
     // Send Telegram notification to the cleaner
     if (cleaner.telegram_id) {
+      console.log(`[cleaner-assignment] Sending Telegram notification to cleaner ${cleaner.name} (telegram_id: ${cleaner.telegram_id})`)
       const notifyResult = await notifyCleanerAssignment(
         cleaner,
         job,
@@ -387,7 +421,19 @@ export async function triggerCleanerAssignment(
         console.error(
           `[cleaner-assignment] Failed to notify cleaner ${cleaner.name}: ${notifyResult.error}`
         )
-        // Don't fail the overall operation, just log the error
+        // Log this failure as a system event for visibility
+        await logSystemEvent({
+          source: 'telegram',
+          event_type: 'CLEANER_NOTIFICATION_FAILED',
+          message: `Failed to notify cleaner ${cleaner.name} for job ${jobId}: ${notifyResult.error}`,
+          job_id: jobId,
+          cleaner_id: cleaner.id,
+          metadata: {
+            cleaner_name: cleaner.name,
+            telegram_id: cleaner.telegram_id,
+            error: notifyResult.error,
+          },
+        })
       } else {
         console.log(
           `[cleaner-assignment] Sent notification to cleaner ${cleaner.name}`
@@ -395,8 +441,21 @@ export async function triggerCleanerAssignment(
       }
     } else {
       console.warn(
-        `[cleaner-assignment] Cleaner ${cleaner.name} has no Telegram ID configured`
+        `[cleaner-assignment] Cleaner ${cleaner.name} has no Telegram ID configured - cannot send notification`
       )
+      // Log this issue as a system event for visibility
+      await logSystemEvent({
+        source: 'telegram',
+        event_type: 'CLEANER_NOTIFICATION_FAILED',
+        message: `Cleaner ${cleaner.name} has no Telegram ID - cannot notify for job ${jobId}`,
+        job_id: jobId,
+        cleaner_id: cleaner.id,
+        metadata: {
+          cleaner_name: cleaner.name,
+          telegram_id: null,
+          reason: 'missing_telegram_id',
+        },
+      })
     }
 
     // Log the assignment event - use CLEANER_BROADCAST for initial assignment notification
